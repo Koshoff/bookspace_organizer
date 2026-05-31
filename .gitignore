@@ -1,0 +1,18 @@
+# Python виртуална среда — пресъздава се от requirements.txt, не се качва
+.venv/
+__pycache__/
+*.pyc
+
+# Базата с реални данни — съдържанието не е код, не е за версиониране
+bookspace.db
+bookspace.db.backup_*
+*.db.before_*
+
+# Локални настройки на редактора, ОС
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Streamlit временни файлове
+.streamlit/secrets.toml
