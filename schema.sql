@@ -170,3 +170,19 @@ CREATE TABLE IF NOT EXISTS stock_movements (
     created_at      TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
     FOREIGN KEY (product_id) REFERENCES products(id)
 );
+
+
+-- ============================================================
+-- ТАБЛИЦА: ОПЕРАТИВНИ РАЗХОДИ
+-- Фирмени разходи извън доставките — наем, заплати, реклама, ток и т.н.
+-- Филтрират се по date (дата на издаване), не по created_at (дата на въвеждане).
+-- ============================================================
+CREATE TABLE IF NOT EXISTS operating_expenses (
+    id              INTEGER PRIMARY KEY,
+    date            TEXT    NOT NULL,
+    category        TEXT    NOT NULL,
+    description     TEXT,
+    amount          REAL    NOT NULL,
+    document_number TEXT,
+    created_at      TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
+);

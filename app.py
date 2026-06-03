@@ -23,7 +23,8 @@ section = [
     ("Журнал продажби", "📊"),
     ("Кредитни известия", "↩️"),
     ("Склад и одит", "🔍"),
-    ("Годишно приключване", "📋")
+    ("Годишно приключване", "📋"),
+    ("Фирмени Разходи", "💰")
 ]
 
 
@@ -1289,3 +1290,123 @@ elif section == "Годишно приключване":
         file_name=f"inventarizaciq_{as_of}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )            
+
+
+# ----- ЕКРАН: ФИРМЕНИ РАЗХОДИ -----
+elif section == "Фирмени Разходи":
+    st.title("💰 Фирмени разходи")
+    st.caption("Оперативни разходи на фирмата извън доставките")
+
+    tab_add, tab_list = st.tabs(["Добави разход", "Списък по период"])
+
+    # --- ТАБ 1: ДОБАВЯНЕ НА РАЗХОД ---
+    with tab_add:
+        with st.form("form_add_expense", clear_on_submit=True):
+            c1, c2 = st.columns(2)
+            with c1:
+                exp_date = st.date_input("Дата на разхода",
+                                         value=date.today(),
+                                         help="Датата, на която разходът е настъпил "
+                                              "(не когато го въвеждаш в системата)")
+                category = st.selectbox("Категория", [
+                    "Наем",
+                    "Заплати и Осигуровки",
+                    "Консумативи/Опаковки",
+                    "Реклама и Маркетинг",
+                    "Битови сметки/Ток/Интернет",
+                    "Други",
+                ])
+            with c2:
+                amount = st.number_input("Сума (лв.)", min_value=0.0,
+                                         value=0.0, step=10.0)
+                document_number = st.text_input("Номер на документ "
+                                                "(фактура/разписка) — по избор")
+
+            description = st.text_area("Описание",
+                                       placeholder="напр. „Ток за месец Май“")
+
+            submitted = st.form_submit_button("Запиши разхода", type="primary")
+
+            if submitted:
+                if amount <= 0:
+                    st.error("Сумата трябва да е по-голяма от 0.")
+                else:
+                    ok, msg = db.add_expense(
+                        str(exp_date), category, description.strip() or None,
+                        amount, document_number.strip() or None
+                    )
+                    if ok:
+                        st.success(msg)
+                    else:
+                        st.error(msg)
+
+    # --- ТАБ 2: СПИСЪК НА РАЗХОДИТЕ ---
+    with tab_list:
+        st.subheader("Филтри")
+        f1, f2, f3 = st.columns(3)
+
+        with f1:
+            list_from = st.date_input("От дата", value=None, key="exp_from")
+        with f2:
+            list_to = st.date_input("До дата", value=None, key="exp_to")
+        with f3:
+            cat_filter = st.selectbox("Категория", [
+                "(всички)", "Наем", "Заплати и Осигуровки",
+                "Консумативи/Опаковки", "Реклама и Маркетинг",
+                "Битови сметки/Ток/Интернет", "Други",
+            ])
+
+        from_arg = str(list_from) if list_from else None
+        to_arg = str(list_to) if list_to else None
+        cat_arg = None if cat_filter == "(всички)" else cat_filter
+
+        expenses = db.get_expenses_by_period(from_arg, to_arg, cat_arg)
+
+        total = sum(e["amount"] for e in expenses)
+        st.metric("Общо за периода", f"{total:.2f} лв.")
+
+        st.divider()
+
+        if not expenses:
+            st.info("Няма разходи по тези критерии.")
+        else:
+            df = pd.DataFrame(expenses).rename(columns={
+                "id": "ID", "date": "Дата", "category": "Категория",
+                "description": "Описание", "amount": "Сума",
+                "document_number": "Документ №", "created_at": "Въведен на",
+            })
+            # Подреждаме видимите колони, скриваме id и created_at.
+            visible_cols = ["Дата", "Категория", "Описание", "Сума", "Документ №"]
+            st.dataframe(df[visible_cols], width='stretch', hide_index=True)
+
+            # --- Изтриване ---
+            st.divider()
+            st.subheader("Изтриване на разход")
+
+            # Етикет с уникален id отпред, за да няма колизии.
+            exp_labels = {
+                f"#{e['id']} · {e['date']} · {e['category']} · {e['amount']:.2f} лв.": e["id"]
+                for e in expenses
+            }
+            chosen_label = st.selectbox("Избери разход за изтриване",
+                                        list(exp_labels.keys()))
+            chosen_id = exp_labels[chosen_label]
+
+            # Двустепенно потвърждение — иначе един клик трие.
+            if st.button("🗑️ Изтрий този разход"):
+                st.session_state.pending_delete_expense = chosen_id
+
+            if st.session_state.get("pending_delete_expense") == chosen_id:
+                st.warning(f"Наистина ли искаш да изтриеш разход #{chosen_id}? "
+                           f"Това действие е необратимо.")
+                cA, cB = st.columns(2)
+                with cA:
+                    if st.button("Да, изтрий", type="primary"):
+                        db.delete_expense(chosen_id)
+                        st.session_state.pending_delete_expense = None
+                        st.success("Разходът е изтрит.")
+                        st.rerun()
+                with cB:
+                    if st.button("Отказ"):
+                        st.session_state.pending_delete_expense = None
+                        st.rerun()

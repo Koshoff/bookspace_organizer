@@ -9,3 +9,4 @@ from db.dashboard import *
 from db.accounting import *
 from db.inventory import *
 from db.promotions import *
+from db.expenses import *
