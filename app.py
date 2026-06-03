@@ -17,6 +17,7 @@ section = [
     ("Доставчици", "🏢"),
     ("Каталог", "📖"),
     ("Доставки", "📦"),
+    ("AI Маркетинг", "🎯"),
     ("Нова продажба", "🛒"),
     ("Ваучери", "🎁"),
     ("Журнал продажби", "📊"),
@@ -36,7 +37,7 @@ for name, icon in section:
     if st.sidebar.button(
         f"{icon}  {name}",
         key=f"nav_{name}",
-        use_container_width=True,
+        width='stretch',
         type="primary" if is_active else "secondary",
     ):
         # Клик → сменяме активната секция и презареждаме, за да се пребоядиса менюто.
@@ -68,7 +69,7 @@ if section == "Табло":
     for col, label in periods:
         # Активният период се откроява като primary (тъмен).
         is_active = st.session_state.dash_period == label
-        if col.button(label, use_container_width=True,
+        if col.button(label, width='stretch',
                       type="primary" if is_active else "secondary",
                       key=f"period_{label}"):
             st.session_state.dash_period = label
@@ -145,7 +146,7 @@ if section == "Табло":
                 "doc_date": "Дата", "amount": "Сума",
             })
             st.dataframe(ldf[["Доставчик", "Документ №", "Дата", "Сума"]],
-                         use_container_width=True, hide_index=True)
+                         width='stretch', hide_index=True)
 
     with right:
         st.subheader("Вземания (чакащи поръчки)")
@@ -161,7 +162,7 @@ if section == "Табло":
                 "created_at": "Дата", "amount": "Сума",
             })
             st.dataframe(rdf[["Поръчка №", "Товарителница", "Дата", "Сума"]],
-                         use_container_width=True, hide_index=True)
+                         width='stretch', hide_index=True)
 
     st.divider()
 
@@ -175,7 +176,7 @@ if section == "Табло":
         adf = adf.rename(columns={
             "ts": "Час/Дата", "type": "Тип", "doc": "Документ", "value": "Стойност",
         })
-        st.dataframe(adf, use_container_width=True, hide_index=True)
+        st.dataframe(adf, width='stretch', hide_index=True)
 
 
     # --- СЧЕТОВОДЕН ЕКСПОРТ И ДДС (Модул счетоводство) ---
@@ -222,7 +223,7 @@ if section == "Табло":
 
     # Показваме консигнацията и като таблица под бутоните, за бърз преглед.
     if consignment:
-        st.dataframe(cdf, use_container_width=True, hide_index=True) 
+        st.dataframe(cdf, width='stretch', hide_index=True) 
 
     # --- МЕСЕЧЕН ОТЧЕТ ЗА СТАТУС НА ПЛАЩАНИЯТА ---
     st.divider()
@@ -268,7 +269,7 @@ if section == "Табло":
                 "waybill_number": "Товарителница", "payment_method": "Начин на плащане",
                 "amount": "Сума",
             })
-            st.dataframe(udf, use_container_width=True, hide_index=True)
+            st.dataframe(udf, width='stretch', hide_index=True)
             st.metric("Общо висящи пари", f"{report['unpaid_total']:.2f} лв.")
 
     with t_paid:
@@ -280,7 +281,7 @@ if section == "Табло":
                 "waybill_number": "Товарителница", "payment_method": "Начин на плащане",
                 "amount": "Сума", "payment_date": "Дата на плащане",
             })
-            st.dataframe(pdf, use_container_width=True, hide_index=True)
+            st.dataframe(pdf, width='stretch', hide_index=True)
             st.metric("Общо събрани", f"{report['paid_total']:.2f} лв.")
 
     # Бутон за Excel експорт
@@ -345,7 +346,7 @@ elif section == "Доставчици":
         else:
             # Превръщаме редовете в pandas DataFrame за красива таблица.
             df = pd.DataFrame([dict(row) for row in suppliers])
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            st.dataframe(df, width='stretch', hide_index=True)
 
             
         
@@ -429,7 +430,7 @@ elif section == "Каталог":
             st.info("Все още няма въведени книги.")
         else:
             df = pd.DataFrame([dict(row) for row in products])
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            st.dataframe(df, width='stretch', hide_index=True)
 
 
 # ----- ЕКРАН: ДОСТАВКИ (Модул 3) -----
@@ -503,7 +504,7 @@ elif section == "Доставки":
                 cart_df["ред_сума"] = cart_df["quantity"] * cart_df["delivery_price"]
                 st.dataframe(cart_df[["title", "quantity", "settlement_type",
                                       "supplier_percent", "delivery_price", "ред_сума"]],
-                             use_container_width=True, hide_index=True)
+                             width='stretch', hide_index=True)
 
                 total = cart_df["ред_сума"].sum()
                 st.metric("Обща доставна сума", f"{total:.2f} eur.")
@@ -591,7 +592,7 @@ elif section == "Доставки":
             st.info("Няма доставки по тези критерии.")
         else:
             df = pd.DataFrame([dict(d) for d in deliveries])
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            st.dataframe(df, width='stretch', hide_index=True)
 
             st.divider()
             st.subheader("Действия по доставка")
@@ -615,7 +616,7 @@ elif section == "Доставки":
             if show_details:
                 items = db.get_delivery_items(chosen_id)
                 items_df = pd.DataFrame([dict(i) for i in items])
-                st.dataframe(items_df, use_container_width=True, hide_index=True)
+                st.dataframe(items_df, width='stretch', hide_index=True)
 
 # ----- ЕКРАН: НОВА ПРОДАЖБА / ПОС (Модул 4) -----
 elif section == "Нова продажба":
@@ -719,7 +720,7 @@ elif section == "Нова продажба":
         st.dataframe(
             df[["title", "supplier_name", "quantity", "cost_price",
                 "sale_price", "ред_продажна"]],
-            use_container_width=True, hide_index=True
+            width='stretch', hide_index=True
         )
 
         total_sale = df["ред_продажна"].sum()
@@ -792,6 +793,83 @@ elif section == "Нова продажба":
             if st.button("Изчисти"):
                 st.session_state.sale_cart = []
                 st.rerun()
+
+
+# ----- ЕКРАН: AI МАРКЕТИНГ -----
+elif section == "AI Маркетинг":
+    st.title("🎯 AI Маркетинг асистент")
+    st.caption("Автоматично генериране на промоции за залежала стока")
+
+    # Праг за залежаване (default 90 дни, потребителят може да го промени)
+    days_threshold = st.number_input(
+        "Праг за залежаване (дни без продажба)",
+        min_value=30, max_value=365, value=90, step=10,
+        help="По подразбиране: 90 дни. По-малък праг = по-агресивна промоция."
+    )
+
+    # Минимален марж след отстъпка — гарантира че не сваляме под прага.
+    min_margin = st.number_input(
+        "Минимален марж след отстъпка (%)",
+        min_value=0, max_value=50, value=10, step=1,
+        help="По подразбиране: 10%. Промоция, която би сваляла маржа под този праг, "
+             "не се препоръчва за съответния продукт."
+    )
+
+    # Голям контрастен бутон — главното действие на екрана.
+    if st.button("🚀 ГЕНЕРИРАЙ ПРОМОЦИЯ ЗА ЗАЛЕЖАЛА СТОКА",
+                 type="primary", use_container_width=True):
+        st.session_state.promo_generated = True
+
+    # Пазим резултата в session_state — иначе при всеки клик ще се преизчислява.
+    if st.session_state.get("promo_generated"):
+        stale = db.get_stale_inventory(days_threshold, min_margin)
+
+        if not stale:
+            st.success("Няма залежала стока. Целият инвентар се движи активно. 🎉")
+        else:
+            st.divider()
+            st.subheader("Препоръчителна промоционална кампания")
+
+            df = pd.DataFrame(stale).rename(columns={
+                "isbn": "ISBN", "title": "Заглавие", "supplier": "Доставчик",
+                "stock": "Налични (бр.)",
+                "unit_cost_no_vat": "Доставна (без ДДС)",
+                "cover_price": "Оригинална цена",
+                "current_margin_percent": "Текущ марж %",
+                "discount_percent": "Препоръчана отстъпка %",
+                "promo_price": "Нова промо цена",
+                "new_margin_percent": "Марж след отстъпка %",
+                "potential_revenue": "Потенциален оборот",
+                "potential_profit": "Потенциална печалба",
+            })
+            st.dataframe(df, use_container_width=True, hide_index=True)
+
+            # --- AI Заключение (шаблонен текст с реалните числа) ---
+            total_titles = len(stale)
+            total_units = sum(r["stock"] for r in stale)
+            total_revenue = sum(r["potential_revenue"] for r in stale)
+            total_profit = sum(r["potential_profit"] for r in stale)
+
+            st.divider()
+            st.markdown(f"""
+            ### 🤖 AI Заключение
+
+            Намерени са **{total_titles}** залежали заглавия с общо **{total_units}** бройки.
+            Ако одобриш тази промоционална кампания и разпродадеш стоката с предложените
+            отстъпки, **Bookspace** ще освободи складово пространство за нови заглавия
+            и ще генерира **{total_revenue:.2f} лв.** свеж оборот, от които
+            **{total_profit:.2f} лв.** ще бъдат чиста печалба (реализиран марж).
+            """)
+
+            # --- Excel експорт за сайта ---
+            st.divider()
+            excel_bytes = db.build_promotion_excel(stale)
+            st.download_button(
+                "📥 Експорт на промо кампанията в Excel (за сайта)",
+                data=excel_bytes,
+                file_name=f"promo_kampania_{date.today()}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )                
 
 
 # ----- ЕКРАН: ВАУЧЕРИ -----
@@ -871,7 +949,7 @@ elif section == "Ваучери":
                 "status": "Статус", "valid_until": "Валиден до",
                 "issued_at": "Издаден на", "used_at": "Използван на",
             })
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            st.dataframe(df, width='stretch', hide_index=True)
 
 # ----- ЕКРАН: ЖУРНАЛ НА ПРОДАЖБИТЕ (Модул 5) -----
 elif section == "Журнал продажби":
@@ -951,7 +1029,7 @@ elif section == "Журнал продажби":
                               "total_cost", "total_sale", "invoice_issued"]
         df = df[[c for c in preferred_cols if c in df.columns]]
 
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(df, width='stretch', hide_index=True)
 
         # --- Смяна на статус ---
         st.divider()
@@ -1011,7 +1089,7 @@ elif section == "Журнал продажби":
                     file_name=f"reorder_{from_arg}_{to_arg}.csv",
                     mime="text/csv"
                 )
-                st.dataframe(reorder_df, use_container_width=True, hide_index=True)
+                st.dataframe(reorder_df, width='stretch', hide_index=True)
             else:
                 st.info("Няма продадени книги в периода.")
         else:
@@ -1041,7 +1119,7 @@ elif section == "Кредитни известия":
         st.info("Няма кредитни известия по този критерий.")
     else:
         df = pd.DataFrame([dict(n) for n in notes])
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(df, width='stretch', hide_index=True)
 
 
 
@@ -1061,7 +1139,7 @@ elif section == "Склад и одит":
         # Текущи наличности
         st.subheader("Текущи наличности")
         df = pd.DataFrame([dict(s) for s in stock])
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(df, width='stretch', hide_index=True)
 
         # --- Одит на конкретна книга ---
         st.divider()
@@ -1089,7 +1167,7 @@ elif section == "Склад и одит":
                 "document_ref": "Документ",
                 "operator": "Оператор",
             })
-            st.dataframe(hist_df, use_container_width=True, hide_index=True)
+            st.dataframe(hist_df, width='stretch', hide_index=True)
 
             # Малко обобщение под историята — потвърждава, че сборът на
             # движенията дава точно текущата наличност. Това е "доказателството".
@@ -1197,4 +1275,17 @@ elif section == "Годишно приключване":
 
             st.info("💡 Този списък е **предложение** за счетоводителя, не автоматично "
                     "решение. Окончателната обезценка се документира със заповед на "
-                    "управителя и протокол.")        
+                    "управителя и протокол.")
+            
+    # --- Excel експорт за годишен баланс ---
+    st.divider()
+    st.subheader("Експорт за годишен баланс")
+    st.caption("Excel с два листа: собствени активи (купена стока) и "
+               "задбалансови активи (консигнация). Готов за подаване към НАП.")
+    excel_bytes = db.build_inventory_excel(str(as_of))
+    st.download_button(
+        "Свали инвентаризационен опис (Excel)",
+        data=excel_bytes,
+        file_name=f"inventarizaciq_{as_of}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )            

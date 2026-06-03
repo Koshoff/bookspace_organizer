@@ -1,8 +1,6 @@
-
 import sqlite3
 
 DB_FILE = "bookspace.db"
-
 
 def get_connection():
     conn = sqlite3.connect(DB_FILE)
