@@ -29,15 +29,47 @@ def get_dashboard_data(date_from, date_to, payment_method=None):
         rev_params.append(payment_method)
     revenue = conn.execute(rev_query, rev_params).fetchone()["total"]
 
-    # --- КАРТА 2: Разходи = платени доставки, по дата на плащане ---
-    expenses = conn.execute(
-        """SELECT COALESCE(SUM(di.quantity * di.delivery_price), 0) AS total
-           FROM deliveries d
-           JOIN delivery_items di ON di.delivery_id = d.id
-           WHERE d.payment_status = 'Платена'
-             AND date(d.delivery_paid_date) >= ? AND date(d.delivery_paid_date) <= ?""",
+    # COGS — доставна стойност на продадените (платени) книги за периода.
+    # Разходът се отчита, когато книгата напуска склада чрез продажба, не при доставка.
+    cogs = conn.execute(
+        """SELECT COALESCE(SUM(si.quantity * si.cost_price), 0) AS total
+           FROM sale_items si
+           JOIN sales s ON s.id = si.sale_id
+           WHERE s.status = 'Платена'
+             AND si.product_id IS NOT NULL
+             AND date(s.created_at) >= ? AND date(s.created_at) <= ?""",
         (date_from, date_to)
     ).fetchone()["total"]
+
+    # Оперативни разходи за периода (наем, заплати, реклама и т.н.) —
+    # филтрират се по date (датата на издаване на разхода).
+    from db.expenses import get_expenses_total_by_period
+    operating_total = get_expenses_total_by_period(date_from, date_to)
+
+    # Разходи за реклама и маркетинг за периода — за KPI „CAC".
+    # Същата таблица operating_expenses, само филтрирана по категория.
+    ad_spend = conn.execute(
+        """SELECT COALESCE(SUM(amount), 0) AS total
+           FROM operating_expenses
+           WHERE category = 'Реклама и Маркетинг'
+             AND date >= ? AND date <= ?""",
+        (date_from, date_to)
+    ).fetchone()["total"]
+
+    # Общ брой продадени физически бройки за периода — за „Средна цена на бройка".
+    # Не на поръчки, а на индивидуални артикули.
+    total_units_sold = conn.execute(
+        """SELECT COALESCE(SUM(si.quantity), 0) AS total
+           FROM sale_items si
+           JOIN sales s ON s.id = si.sale_id
+           WHERE s.status = 'Платена'
+             AND si.product_id IS NOT NULL
+             AND date(s.payment_date) >= ? AND date(s.payment_date) <= ?""",
+        (date_from, date_to)
+    ).fetchone()["total"]
+
+    # Общите разходи = COGS + оперативни. Това отива в картата „Общо разходи".
+    expenses = cogs + operating_total
 
     # --- КАРТА 4: Брой продажби за периода (по дата на създаване, не отказани) ---
     sales_count = conn.execute(
@@ -114,9 +146,13 @@ def get_dashboard_data(date_from, date_to, payment_method=None):
 
     return {
         "revenue": revenue,
-        "expenses": expenses,
-        "profit": revenue - expenses,        # Карта 3: чиста печалба
+        "expenses": expenses,                # сборът: COGS + оперативни
+        "cogs": cogs,                        # отделна разбивка за UI
+        "operating_expenses": operating_total, # отделна разбивка за UI
+        "profit": revenue - expenses,        # Карта 3: чиста печалба (може и да е минус)
         "sales_count": sales_count,
+        "ad_spend": ad_spend,                    
+        "total_units_sold": total_units_sold,
         "liabilities": liabilities,
         "receivables": receivables,
         "activities": activities,
@@ -124,118 +160,7 @@ def get_dashboard_data(date_from, date_to, payment_method=None):
 
 
 
-# ---------- МЕСЕЧЕН ОТЧЕТ ЗА СТАТУС НА ПЛАЩАНИЯТА ----------
 
-def get_monthly_payment_report(year_month):
-    """
-    Връща месечен отчет за плащанията. year_month е низ 'YYYY-MM'.
-    Дели поръчките на неплатени (чакащи) и платени, за месеца по дата на създаване.
-    Връща речник с трите суми и двата списъка.
-    """
-    conn = get_connection()
-
-    # Неплатени (чакащи плащане) за месеца
-    unpaid = conn.execute(
-        """SELECT s.created_at, s.order_number, s.waybill_number,
-                  s.payment_method,
-                  s.supplementary_payment_method,
-                  s.supplementary_amount,
-                  COALESCE(SUM(si.quantity * si.sale_price), 0) AS amount
-           FROM sales s
-           LEFT JOIN sale_items si ON si.sale_id = s.id
-           WHERE s.status = 'Чака плащане'
-             AND strftime('%Y-%m', s.created_at) = ?
-           GROUP BY s.id
-           ORDER BY s.created_at""",
-        (year_month,)
-    ).fetchall()
-
-    # Платени за месеца (с дата на плащане)
-    paid = conn.execute(
-        """SELECT s.created_at, s.order_number, s.waybill_number,
-                  s.payment_method, 
-                  s.supplementary_payment_method,
-                  s.supplementary_amount,
-                  s.payment_date,
-                  COALESCE(SUM(si.quantity * si.sale_price), 0) AS amount
-           FROM sales s
-           LEFT JOIN sale_items si ON si.sale_id = s.id
-           WHERE s.status = 'Платена'
-             AND strftime('%Y-%m', s.created_at) = ?
-           GROUP BY s.id
-           ORDER BY s.created_at""",
-        (year_month,)
-    ).fetchall()
-
-    unpaid_total = sum(r["amount"] for r in unpaid)
-    paid_total = sum(r["amount"] for r in paid)
-
-    def describe(r):
-        d = dict(r)
-        if d["payment_method"] == "Ваучер" and d["supplementary_amount"] > 0:
-            d["payment_method"] = (f"Ваучер + {d['supplementary_payment_method']} "
-                                   f"({d['supplementary_amount']:.2f} лв.)")
-        return d
-
-    return {
-        "unpaid": [describe(r) for r in unpaid],
-        "paid": [describe(r) for r in paid],
-        "unpaid_total": unpaid_total,
-        "paid_total": paid_total,
-        "turnover": unpaid_total + paid_total,
-    }
-
-def build_monthly_payment_excel(year_month):
-    """Excel с два листа: 'Неплатени' и 'Платени' за месеца."""
-    from openpyxl import Workbook
-    from openpyxl.styles import Font
-    from io import BytesIO
-
-    data = get_monthly_payment_report(year_month)
-    wb = Workbook()
-
-    # Лист 1: Неплатени
-    ws = wb.active
-    ws.title = "Неплатени"
-    ws.append(["Дата/Час", "Поръчка №", "Товарителница",
-               "Начин на плащане", "Сума"])
-    for c in ws[1]:
-        c.font = Font(bold=True)
-    row = 2
-    for r in data["unpaid"]:
-        ws.cell(row=row, column=1, value=r["created_at"])
-        ws.cell(row=row, column=2, value=r["order_number"] or "-")
-        ws.cell(row=row, column=3, value=r["waybill_number"] or "-")
-        ws.cell(row=row, column=4, value=r["payment_method"])
-        ws.cell(row=row, column=5, value=round(r["amount"], 2))
-        row += 1
-    if row > 2:
-        ws.cell(row=row, column=1, value="ОБЩО ВИСЯЩИ").font = Font(bold=True)
-        ws.cell(row=row, column=5, value=f"=SUM(E2:E{row-1})").font = Font(bold=True)
-
-    # Лист 2: Платени
-    ws2 = wb.create_sheet("Платени")
-    ws2.append(["Дата/Час", "Поръчка №", "Товарителница",
-                "Начин на плащане", "Сума", "Дата на плащане"])
-    for c in ws2[1]:
-        c.font = Font(bold=True)
-    row = 2
-    for r in data["paid"]:
-        ws2.cell(row=row, column=1, value=r["created_at"])
-        ws2.cell(row=row, column=2, value=r["order_number"] or "-")
-        ws2.cell(row=row, column=3, value=r["waybill_number"] or "-")
-        ws2.cell(row=row, column=4, value=r["payment_method"])
-        ws2.cell(row=row, column=5, value=round(r["amount"], 2))
-        ws2.cell(row=row, column=6, value=r["payment_date"])
-        row += 1
-    if row > 2:
-        ws2.cell(row=row, column=1, value="ОБЩО СЪБРАНИ").font = Font(bold=True)
-        ws2.cell(row=row, column=5, value=f"=SUM(E2:E{row-1})").font = Font(bold=True)
-
-    buffer = BytesIO()
-    wb.save(buffer)
-    buffer.seek(0)
-    return buffer.getvalue()
 
 
 

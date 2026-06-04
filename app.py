@@ -107,9 +107,62 @@ if section == "Табло":
     # --- ЧЕТИРИТЕ КАРТИ ---
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Приходи (оборот)", f"{data['revenue']:.2f} лв.")
-    c2.metric("Разходи", f"{data['expenses']:.2f} лв.")
-    c3.metric("Чиста печалба", f"{data['profit']:.2f} лв.")
+    c2.metric("Общо разходи", f"{data['expenses']:.2f} лв.",
+              help="COGS (доставна стойност на продаденото) + оперативни разходи")
+
+    # Чиста печалба — задължително със знак, дори при положителна стойност няма
+    # значение. Streamlit метрики и без това поставят минус автоматично, но
+    # използваме explicit format за яснота, че знакът е смислен.
+    profit = data['profit']
+    profit_str = f"{profit:.2f} лв." if profit >= 0 else f"−{abs(profit):.2f} лв."
+    c3.metric("Чиста печалба", profit_str)
+
     c4.metric("Брой продажби", data["sales_count"])
+
+    # Разбивка на разходите — малка справка под главните карти.
+    with st.expander("Разбивка на разходите"):
+        b1, b2 = st.columns(2)
+        b1.metric("Доставна на продаденото (COGS)",
+                  f"{data['cogs']:.2f} лв.")
+        b2.metric("Оперативни разходи",
+                  f"{data['operating_expenses']:.2f} лв.")
+        
+    # --- ПАНЕЛ: БИЗНЕС ЕФЕКТИВНОСТ (CAC / AOV / Средна цена) ---
+    st.divider()
+    st.subheader("Бизнес ефективност")
+    st.caption("Маркетинг и продажбени KPI за избрания период")
+
+    # Изчисляваме трите метрики. Защитаваме срещу делене на нула.
+    sales_n = data["sales_count"]
+    revenue = data["revenue"]
+    ad_spend = data["ad_spend"]
+    units_sold = data["total_units_sold"]
+
+    cac = (ad_spend / sales_n) if sales_n > 0 else 0
+    aov = (revenue / sales_n) if sales_n > 0 else 0
+    avg_unit_price = (revenue / units_sold) if units_sold > 0 else 0
+
+    k1, k2, k3 = st.columns(3)
+    k1.metric("Цена за реклама на поръчка (CAC)",
+              f"{cac:.2f} лв.",
+              help="Разходи за реклама / брой поръчки за периода")
+    k2.metric("Средна стойност на поръчка (AOV)",
+              f"{aov:.2f} лв.",
+              help="Общ оборот / брой поръчки за периода")
+    k3.metric("Средна цена на продаден артикул",
+              f"{avg_unit_price:.2f} лв.",
+              help="Общ оборот / общ брой физически продадени бройки")
+
+    # Индикатор за неефективна реклама — само ако имаме реални данни.
+    if sales_n > 0 and aov > 0 and cac > 0.4 * aov:
+        st.warning("⚠️ **Внимание:** Разходите за придобиване на клиент (CAC) "
+                   "са твърде високи спрямо стойността на поръчките (AOV). "
+                   "Оптимизирайте рекламните кампании.")
+    elif sales_n == 0 and ad_spend > 0:
+        # Имаме реклама, но няма продажби. Скъсаво е, но различен случай от „много CAC".
+        st.info("ℹ️ Има разходи за реклама за периода, но няма продажби. "
+                "Това може да е знак, че рекламата още не носи резултати, "
+                "или периодът е твърде кратък.")    
 
     st.divider()
 
@@ -1409,4 +1462,4 @@ elif section == "Фирмени Разходи":
                 with cB:
                     if st.button("Отказ"):
                         st.session_state.pending_delete_expense = None
-                        st.rerun()
+                        st.rerun()    
