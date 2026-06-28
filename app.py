@@ -245,13 +245,23 @@ if section == "Табло":
     # --- Месечен дневник на продажбите и покупките (Excel) ---
     with ec1:
         st.markdown("**Дневник продажби и покупки (ДДС)**")
-        excel_bytes = db.build_accounting_excel(str(date_from), str(date_to))
-        st.download_button(
-            "Свали Excel дневник",
-            data=excel_bytes,
-            file_name=f"dnevnik_{date_from}_{date_to}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
+        # Excel-ът се генерира само при заявка (бутон), не при всяко презареждане.
+        # Пазим резултата в session_state с периода — ако периодът се смени,
+        # бутонът се връща, за да не свалиш стар файл с грешно име.
+        acc_period = (str(date_from), str(date_to))
+        if st.button("Подготви Excel дневник", key="prep_acc_excel"):
+            st.session_state.acc_excel = {
+                "period": acc_period,
+                "data": db.build_accounting_excel(*acc_period),
+            }
+        acc = st.session_state.get("acc_excel")
+        if acc and acc["period"] == acc_period:
+            st.download_button(
+                "Свали Excel дневник",
+                data=acc["data"],
+                file_name=f"dnevnik_{date_from}_{date_to}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
 
     # --- Отчет за консигнация (CSV) ---
     with ec2:
@@ -338,14 +348,17 @@ if section == "Табло":
             st.dataframe(pdf, width='stretch', hide_index=True)
             st.metric("Общо събрани", f"{report['paid_total']:.2f} лв.")
 
-    # Бутон за Excel експорт
-    monthly_excel = db.build_monthly_payment_excel(ym)
-    st.download_button(
-        "Експорт на месечен отчет за плащанията (Excel)",
-        data=monthly_excel,
-        file_name=f"otchet_plashtania_{ym}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )       
+    # Бутон за Excel експорт — генерира се само при заявка (не при всяко зареждане).
+    if st.button("Подготви месечен отчет (Excel)", key="prep_monthly_excel"):
+        st.session_state.monthly_excel = {"ym": ym, "data": db.build_monthly_payment_excel(ym)}
+    me = st.session_state.get("monthly_excel")
+    if me and me["ym"] == ym:
+        st.download_button(
+            "Експорт на месечен отчет за плащанията (Excel)",
+            data=me["data"],
+            file_name=f"otchet_plashtania_{ym}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
 
 
 
@@ -1336,13 +1349,17 @@ elif section == "Годишно приключване":
     st.subheader("Експорт за годишен баланс")
     st.caption("Excel с два листа: собствени активи (купена стока) и "
                "задбалансови активи (консигнация). Готов за подаване към НАП.")
-    excel_bytes = db.build_inventory_excel(str(as_of))
-    st.download_button(
-        "Свали инвентаризационен опис (Excel)",
-        data=excel_bytes,
-        file_name=f"inventarizaciq_{as_of}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )            
+    # Генерира се само при заявка (бутон), не при всяко презареждане на екрана.
+    if st.button("Подготви инвентаризационен опис (Excel)", key="prep_inv_excel"):
+        st.session_state.inv_excel = {"as_of": str(as_of), "data": db.build_inventory_excel(str(as_of))}
+    inv = st.session_state.get("inv_excel")
+    if inv and inv["as_of"] == str(as_of):
+        st.download_button(
+            "Свали инвентаризационен опис (Excel)",
+            data=inv["data"],
+            file_name=f"inventarizaciq_{as_of}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
 
 
 # ----- ЕКРАН: ФИРМЕНИ РАЗХОДИ -----

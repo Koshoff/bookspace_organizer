@@ -17,3 +17,7 @@ Thumbs.db
 
 # Streamlit временни файлове
 .streamlit/secrets.toml
+
+# Логове от изпълнение — не са код, не се версионират
+streamlit_log.txt
+*.log

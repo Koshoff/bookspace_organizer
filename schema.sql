@@ -186,3 +186,17 @@ CREATE TABLE IF NOT EXISTS operating_expenses (
     document_number TEXT,
     created_at      TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
 );
+
+-- ============================================================
+-- ИНДЕКСИ ЗА ПРОИЗВОДИТЕЛНОСТ
+-- Наличността се смята като SUM(quantity_change) по product_id при ВСЯКО
+-- зареждане на каталог/склад/продажба — без индекс това е пълно сканиране.
+-- Останалите индекси покриват честите JOIN-ове по външни ключове в журналите.
+-- ============================================================
+CREATE INDEX IF NOT EXISTS idx_stock_movements_product   ON stock_movements(product_id);
+CREATE INDEX IF NOT EXISTS idx_sale_items_sale           ON sale_items(sale_id);
+CREATE INDEX IF NOT EXISTS idx_sale_items_product        ON sale_items(product_id);
+CREATE INDEX IF NOT EXISTS idx_delivery_items_delivery   ON delivery_items(delivery_id);
+CREATE INDEX IF NOT EXISTS idx_delivery_items_product    ON delivery_items(product_id);
+CREATE INDEX IF NOT EXISTS idx_sales_status              ON sales(status);
+CREATE INDEX IF NOT EXISTS idx_deliveries_payment_status ON deliveries(payment_status);
