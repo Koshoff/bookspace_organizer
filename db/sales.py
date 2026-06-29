@@ -208,6 +208,41 @@ def get_sold_books_for_reorder(date_from, date_to):
     conn.close()
     return rows
 
+def get_daily_supplier_reorders(day):
+    """
+    Връща продадените КНИГИ за конкретен ден (формат 'YYYY-MM-DD'), с доставчик
+    и неговия имейл, за автоматичните заявки за зареждане.
+
+    - Изключва отказани продажби (сторното връща стоката — не я презареждаме).
+    - Изключва ваучерни редове (product_id IS NULL).
+    - Сумира едно и също заглавие през всички продажби за деня.
+    Подредено по доставчик, после по заглавие — готово за групиране в UI.
+    """
+    conn = get_connection()
+    rows = conn.execute(
+        """SELECT
+               sup.id    AS supplier_id,
+               sup.name  AS supplier_name,
+               sup.email AS supplier_email,
+               p.isbn,
+               p.title,
+               p.author,
+               SUM(si.quantity) AS total_sold
+           FROM sale_items si
+           JOIN sales s     ON s.id = si.sale_id
+           JOIN products p  ON p.id = si.product_id
+           JOIN suppliers sup ON sup.id = p.supplier_id
+           WHERE date(s.created_at) = ?
+             AND s.status != 'Отказана'
+             AND si.product_id IS NOT NULL
+           GROUP BY p.id
+           ORDER BY sup.name, p.title""",
+        (day,)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
 def create_sale_with_voucher(order_number, waybill_number, items, voucher_id,
                              supplementary_method=None, invoice_data=None,
                              operator="система"):

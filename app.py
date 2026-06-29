@@ -3,6 +3,7 @@ from datetime import date, timedelta
 import pandas as pd
 import styles
 import db   # нашият слой за достъп до базата
+import mailer   # сервизен слой за автоматичните заявки по имейл
 
 # Конфигурация на страницата — широк изглед, заглавие на таба в браузъра.
 st.set_page_config(page_title="Bookspace ERP", layout="wide")
@@ -21,6 +22,7 @@ section = [
     ("Нова продажба", "🛒"),
     ("Ваучери", "🎁"),
     ("Журнал продажби", "📊"),
+    ("Автоматични заявки", "📨"),
     ("Кредитни известия", "↩️"),
     ("Склад и одит", "🔍"),
     ("Годишно приключване", "📋"),
@@ -385,7 +387,9 @@ elif section == "Доставчици":
                 mol = st.text_input("МОЛ")
                 phone = st.text_input("Телефон")
             with col2:
-                email = st.text_input("Имейл")
+                email = st.text_input("Имейл *",
+                                      help="Задължителен — на този адрес отиват "
+                                           "автоматичните заявки за зареждане.")
                 address = st.text_input("Адрес")
                 discount = st.number_input(
                     "Стандартен % отстъпка", min_value=0.0, max_value=100.0,
@@ -397,9 +401,13 @@ elif section == "Доставчици":
             if submitted:
                 if not name.strip():
                     st.error("Името е задължително.")
+                elif not mailer.is_valid_email(email):
+                    st.error("Валиден имейл е задължителен — на него се "
+                             "изпращат автоматичните заявки за зареждане.")
                 else:
                     ok, msg = db.add_supplier(
-                        name.strip(), bulstat, mol, address, phone, email, discount
+                        name.strip(), bulstat, mol, address, phone,
+                        email.strip(), discount
                     )
                     if ok:
                         st.success(msg)
@@ -438,7 +446,9 @@ elif section == "Доставчици":
                     e_mol = st.text_input("МОЛ", value=cur["mol"] or "")
                     e_phone = st.text_input("Телефон", value=cur["phone"] or "")
                 with col2:
-                    e_email = st.text_input("Имейл", value=cur["email"] or "")
+                    e_email = st.text_input("Имейл *", value=cur["email"] or "",
+                                            help="Задължителен — за автоматичните "
+                                                 "заявки за зареждане.")
                     e_address = st.text_input("Адрес", value=cur["address"] or "")
                     e_discount = st.number_input(
                         "Стандартен % отстъпка", min_value=0.0, max_value=100.0,
@@ -448,10 +458,13 @@ elif section == "Доставчици":
                 if save:
                     if not e_name.strip():
                         st.error("Името е задължително.")
+                    elif not mailer.is_valid_email(e_email):
+                        st.error("Валиден имейл е задължителен — на него се "
+                                 "изпращат автоматичните заявки за зареждане.")
                     else:
                         ok, msg = db.update_supplier(
                             cur["id"], e_name.strip(), e_bulstat, e_mol,
-                            e_address, e_phone, e_email, e_discount
+                            e_address, e_phone, e_email.strip(), e_discount
                         )
                         (st.success if ok else st.error)(msg)
                         if ok:
@@ -1308,6 +1321,72 @@ elif section == "Журнал продажби":
                 st.info("Няма продадени книги в периода.")
         else:
             st.info("Задай период (от/до дата), за да генерираш експорт.")
+
+
+# ----- ЕКРАН: АВТОМАТИЧНИ ЗАЯВКИ КЪМ ИЗДАТЕЛСТВА -----
+elif section == "Автоматични заявки":
+    st.title("📨 Автоматични заявки към издателства")
+    st.caption("Обобщава продажбите за избран ден и изпраща на всяко "
+               "издателство заявка за зареждане с продадените му книги.")
+
+    # Филтър за ден — по подразбиране днес.
+    order_day = st.date_input("Обобщи продажбите за ден", value=date.today(),
+                              key="reorder_day")
+
+    # Голям контрастен бутон — главното действие на екрана.
+    if st.button("📨 ИЗПРАТИ АВТОМАТИЧНИ ЗАЯВКИ ЗА ЗАРЕЖДАНЕ",
+                 type="primary", use_container_width=True):
+        st.session_state.reorder_run_day = str(order_day)
+
+    # Изпълняваме само ако бутонът е натиснат за този ден (пази при rerun).
+    if st.session_state.get("reorder_run_day") == str(order_day):
+        rows = db.get_daily_supplier_reorders(str(order_day))
+
+        if not rows:
+            st.info(f"Няма продадени книги за {order_day}. Няма какво да се заяви.")
+        else:
+            # --- Стъпка Б: групираме продадените книги по доставчик ---
+            by_supplier = {}
+            for r in rows:
+                grp = by_supplier.setdefault(r["supplier_id"], {
+                    "name": r["supplier_name"],
+                    "email": r["supplier_email"],
+                    "items": [],
+                })
+                grp["items"].append(r)
+
+            st.success(f"Намерени са продажби за **{len(by_supplier)}** "
+                       f"издателства на {order_day}.")
+            st.divider()
+
+            # --- Стъпка В: цикъл по доставчиците и изпращане ---
+            for supplier_id, grp in by_supplier.items():
+                # Всяко издателство в собствен заоблен контейнер.
+                with st.container(border=True):
+                    st.subheader(f"🏢 {grp['name']}")
+
+                    # Стъпка Г: красивата HTML таблица (Sleek Monochrome).
+                    html_table = mailer.build_order_html_table(grp["items"])
+
+                    # Преглед на самия имейл (както ще го види издателството).
+                    with st.expander("Преглед на имейла"):
+                        email_html = mailer.build_order_email_html(
+                            grp["name"], str(order_day), html_table)
+                        st.markdown(email_html, unsafe_allow_html=True)
+
+                    total_units = sum(i["total_sold"] for i in grp["items"])
+                    st.caption(f"{len(grp['items'])} заглавия · "
+                               f"{total_units} бройки за заявка")
+
+                    # Изпращане — симулация. Ако имейлът липсва/невалиден, спираме
+                    # с ясно предупреждение (имейлът е задължителен по картотека).
+                    if not mailer.is_valid_email(grp["email"]):
+                        st.warning(f"⚠️ Издателство „{grp['name']}“ няма валиден "
+                                   f"имейл в картотеката. Заявката не е изпратена. "
+                                   f"Допълнете имейла в раздел „Доставчици“.")
+                    else:
+                        mailer.send_supplier_email(
+                            grp["name"], grp["email"], html_table)
 
 
 # ----- ЕКРАН: КРЕДИТНИ ИЗВЕСТИЯ (Модул 6) -----
