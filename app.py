@@ -574,7 +574,7 @@ elif section == "Доставки":
                              width='stretch', hide_index=True)
 
                 total = cart_df["ред_сума"].sum()
-                st.metric("Обща доставна сума", f"{total:.2f} eur.")
+                st.metric("Обща доставна сума", f"{total:.2f} лв.")
 
                 colA, colB = st.columns(2)
                 with colA:
@@ -635,7 +635,7 @@ elif section == "Доставки":
         )
 
         total_filtered = sum(d["total_amount"] for d in deliveries)
-        st.metric("Обща сума (филтрирани)", f"{total_filtered:.2f} eur.")
+        st.metric("Обща сума (филтрирани)", f"{total_filtered:.2f} лв.")
 
         # --- Счетоводен брояч по начин на плащане (за периода) ---
         breakdown = db.get_delivery_payment_breakdown(from_arg, to_arg)
@@ -647,11 +647,11 @@ elif section == "Доставки":
         cash = breakdown.get("В брой", {"count": 0, "total": 0})
 
         bc1.metric(f"Консигнация ({consign['count']} док.)",
-                   f"{consign['total']:.2f} eur.")
+                   f"{consign['total']:.2f} лв.")
         bc2.metric(f"По банка ({bank['count']} док.)",
-                   f"{bank['total']:.2f} eur.")
+                   f"{bank['total']:.2f} лв.")
         bc3.metric(f"В брой ({cash['count']} док.)",
-                   f"{cash['total']:.2f} eur.")
+                   f"{cash['total']:.2f} лв.")
 
         st.divider()
 
@@ -793,9 +793,9 @@ elif section == "Нова продажба":
         total_sale = df["ред_продажна"].sum()
         total_cost = df["ред_доставна"].sum()
         m1, m2, m3 = st.columns(3)
-        m1.metric("Продажна сума", f"{total_sale:.2f} eur.")
-        m2.metric("Доставна сума", f"{total_cost:.2f} eur.")
-        m3.metric("Печалба", f"{total_sale - total_cost:.2f} eur.")
+        m1.metric("Продажна сума", f"{total_sale:.2f} лв.")
+        m2.metric("Доставна сума", f"{total_cost:.2f} лв.")
+        m3.metric("Печалба", f"{total_sale - total_cost:.2f} лв.")
 
         cA, cB = st.columns(2)
         with cA:
@@ -1060,16 +1060,16 @@ elif section == "Журнал продажби":
     # Първи ред: трите потока оборот
     st.subheader("Оборот по статус")
     o1, o2, o3 = st.columns(3)
-    o1.metric("✅ Реализиран (платени)", f"{realized_sale:.2f} eur.")
-    o2.metric("⏳ В очакване (чака плащане)", f"{pending_sale:.2f} eur.")
-    o3.metric("↩️ Сторниран (отказани)", f"{cancelled_sale:.2f} eur.")
+    o1.metric("✅ Реализиран (платени)", f"{realized_sale:.2f} лв.")
+    o2.metric("⏳ В очакване (чака плащане)", f"{pending_sale:.2f} лв.")
+    o3.metric("↩️ Сторниран (отказани)", f"{cancelled_sale:.2f} лв.")
 
     # Втори ред: обобщаващи показатели
     st.subheader("Обобщение")
     m1, m2, m3 = st.columns(3)
     m1.metric("Брой продажби", len(sales))
-    m2.metric("Доставна сума (реализ.)", f"{realized_cost:.2f} eur.")
-    m3.metric("Чиста печалба (реализ.)", f"{realized_profit:.2f} eur.")
+    m2.metric("Доставна сума (реализ.)", f"{realized_cost:.2f} лв.")
+    m3.metric("Чиста печалба (реализ.)", f"{realized_profit:.2f} лв.")
 
     st.divider()
 
@@ -1107,7 +1107,7 @@ elif section == "Журнал продажби":
             order_part = s["order_number"] if s["order_number"] else "(без номер)"
             # ID-то отпред гарантира уникалност — две продажби никога нямат еднакво id.
             label = (f"#{s['id']} · №{order_part} · {s['status']} "
-                     f"· {s['total_sale']:.2f} eur. · {s['created_at']}")
+                     f"· {s['total_sale']:.2f} лв. · {s['created_at']}")
             sale_labels[label] = s["id"]
 
         chosen = st.selectbox("Избери продажба", list(sale_labels.keys()))
@@ -1178,7 +1178,7 @@ elif section == "Кредитни известия":
     total_returned = sum(n["returned_amount"] for n in notes)
     m1, m2 = st.columns(2)
     m1.metric("Брой сторна", total_count)
-    m2.metric("Обща върната сума", f"{total_returned:.2f} eur.")
+    m2.metric("Обща върната сума", f"{total_returned:.2f} лв.")
 
     st.divider()
 
