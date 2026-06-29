@@ -57,6 +57,66 @@ def add_product(isbn, title, author, supplier_id, cover_price, vat_rate,
 
 
 
+def get_all_products_full():
+    """Връща ВСИЧКИ колони на артикулите (за пре-попълване при редакция),
+    подредени по заглавие. За справки ползвай get_all_products (с наличност)."""
+    conn = get_connection()
+    rows = conn.execute("SELECT * FROM products ORDER BY title").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def update_product(product_id, isbn, title, author, supplier_id, cover_price,
+                   vat_rate, year, cover_type, genre, description,
+                   product_type="Книга", fiscal_group="Б"):
+    """Обновява съществуващ артикул. Връща (True, съобщение) или (False, грешка).
+    Хваща нарушение на UNIQUE(isbn) — друг артикул вече носи това ISBN."""
+    conn = get_connection()
+    try:
+        conn.execute(
+            """UPDATE products
+               SET isbn = ?, title = ?, author = ?, supplier_id = ?,
+                   cover_price = ?, vat_rate = ?, year = ?, cover_type = ?,
+                   genre = ?, description = ?, product_type = ?, fiscal_group = ?
+               WHERE id = ?""",
+            (isbn, title, author, supplier_id, cover_price, vat_rate, year,
+             cover_type, genre, description, product_type, fiscal_group,
+             product_id)
+        )
+        conn.commit()
+        return True, "Артикулът е обновен успешно."
+    except sqlite3.IntegrityError:
+        return False, f"Вече съществува друг артикул с ISBN „{isbn}“."
+    finally:
+        conn.close()
+
+
+def delete_product(product_id):
+    """Изтрива артикул САМО ако няма никаква история по него
+    (доставки, продажби, складови движения). Артикул с история носи
+    счетоводни следи — изтриването му би изкривило отчетите, затова го
+    отказваме. Връща (True, съобщение) или (False, грешка)."""
+    conn = get_connection()
+    try:
+        refs = conn.execute(
+            """SELECT
+                   (SELECT COUNT(*) FROM delivery_items WHERE product_id = ?) +
+                   (SELECT COUNT(*) FROM sale_items     WHERE product_id = ?) +
+                   (SELECT COUNT(*) FROM stock_movements WHERE product_id = ?)
+                   AS c""",
+            (product_id, product_id, product_id)
+        ).fetchone()["c"]
+        if refs > 0:
+            return False, ("Не може да се изтрие — артикулът има история "
+                           "(доставки/продажби/движения). Записите трябва да "
+                           "се запазят за одита.")
+        conn.execute("DELETE FROM products WHERE id = ?", (product_id,))
+        conn.commit()
+        return True, "Артикулът е изтрит."
+    finally:
+        conn.close()
+
+
 def get_products_for_delivery():
     """Връща книгите във вид, удобен за избор при доставка:
     {ISBN: {id, title, author, supplier_id}}. Ползва се за сканиране по ISBN."""

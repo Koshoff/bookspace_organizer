@@ -368,8 +368,9 @@ if section == "Табло":
 elif section == "Доставчици":
     st.title("Доставчици")
 
-    # Два таба: единият за списъка, другият за добавяне. По-чисто от всичко на куп.
-    tab_list, tab_add = st.tabs(["Списък", "Добави нов"])
+    # Три таба: списък, добавяне и редакция/изтриване.
+    tab_list, tab_add, tab_edit = st.tabs(["Списък", "Добави нов",
+                                           "Редактирай/Изтрий"])
 
     # --- ТАБ: ДОБАВИ НОВ ДОСТАВЧИК ---
     with tab_add:
@@ -415,13 +416,73 @@ elif section == "Доставчици":
             df = pd.DataFrame([dict(row) for row in suppliers])
             st.dataframe(df, width='stretch', hide_index=True)
 
-            
-        
+    # --- ТАБ: РЕДАКЦИЯ / ИЗТРИВАНЕ ---
+    with tab_edit:
+        suppliers = db.get_all_suppliers()
+        if not suppliers:
+            st.info("Няма доставчици за редакция.")
+        else:
+            # Избираме доставчик; id-то отпред гарантира уникален етикет.
+            sup_map = {f"#{s['id']} · {s['name']}": dict(s) for s in suppliers}
+            chosen_label = st.selectbox("Избери доставчик",
+                                        list(sup_map.keys()), key="edit_sup_pick")
+            cur = sup_map[chosen_label]
+
+            # Формата се пре-попълва с текущите стойности. key включва id-то,
+            # за да се рефрешнат полетата при смяна на избрания доставчик.
+            with st.form(f"form_edit_supplier_{cur['id']}"):
+                e_name = st.text_input("Име на фирма/доставчик *", value=cur["name"])
+                col1, col2 = st.columns(2)
+                with col1:
+                    e_bulstat = st.text_input("Булстат/ЕИК", value=cur["bulstat"] or "")
+                    e_mol = st.text_input("МОЛ", value=cur["mol"] or "")
+                    e_phone = st.text_input("Телефон", value=cur["phone"] or "")
+                with col2:
+                    e_email = st.text_input("Имейл", value=cur["email"] or "")
+                    e_address = st.text_input("Адрес", value=cur["address"] or "")
+                    e_discount = st.number_input(
+                        "Стандартен % отстъпка", min_value=0.0, max_value=100.0,
+                        value=float(cur["default_discount"]), step=0.5
+                    )
+                save = st.form_submit_button("Запази промените", type="primary")
+                if save:
+                    if not e_name.strip():
+                        st.error("Името е задължително.")
+                    else:
+                        ok, msg = db.update_supplier(
+                            cur["id"], e_name.strip(), e_bulstat, e_mol,
+                            e_address, e_phone, e_email, e_discount
+                        )
+                        (st.success if ok else st.error)(msg)
+                        if ok:
+                            st.rerun()
+
+            # Изтриване — двустепенно потвърждение (иначе един клик трие).
+            st.divider()
+            st.subheader("Изтриване")
+            if st.button("🗑️ Изтрий този доставчик"):
+                st.session_state.pending_delete_supplier = cur["id"]
+            if st.session_state.get("pending_delete_supplier") == cur["id"]:
+                st.warning(f"Наистина ли да изтрия „{cur['name']}“? Необратимо е.")
+                cA, cB = st.columns(2)
+                with cA:
+                    if st.button("Да, изтрий", type="primary", key="confirm_del_sup"):
+                        ok, msg = db.delete_supplier(cur["id"])
+                        (st.success if ok else st.error)(msg)
+                        st.session_state.pending_delete_supplier = None
+                        if ok:
+                            st.rerun()
+                with cB:
+                    if st.button("Отказ", key="cancel_del_sup"):
+                        st.session_state.pending_delete_supplier = None
+                        st.rerun()
+
 # ----- ЕКРАН: КАТАЛОГ (Модул 2) -----
 elif section == "Каталог":
     st.title("Продуктов каталог")
 
-    tab_list, tab_add = st.tabs(["Списък", "Добави книга"])
+    tab_list, tab_add, tab_edit = st.tabs(["Списък", "Добави книга",
+                                           "Редактирай/Изтрий"])
 
     # --- ТАБ: ДОБАВИ КНИГА ---
     with tab_add:
@@ -498,6 +559,92 @@ elif section == "Каталог":
         else:
             df = pd.DataFrame([dict(row) for row in products])
             st.dataframe(df, width='stretch', hide_index=True)
+
+    # --- ТАБ: РЕДАКЦИЯ / ИЗТРИВАНЕ НА АРТИКУЛ ---
+    with tab_edit:
+        full_products = db.get_all_products_full()
+        suppliers = db.get_all_suppliers()
+        if not full_products:
+            st.info("Няма артикули за редакция.")
+        elif not suppliers:
+            st.warning("Няма доставчици.")
+        else:
+            supplier_map = {s["name"]: s["id"] for s in suppliers}
+            id_to_supplier = {s["id"]: s["name"] for s in suppliers}
+
+            prod_map = {f"#{p['id']} · {p['title']} ({p['isbn']})": p
+                        for p in full_products}
+            chosen_label = st.selectbox("Избери артикул",
+                                        list(prod_map.keys()), key="edit_prod_pick")
+            cur = prod_map[chosen_label]
+
+            with st.form(f"form_edit_product_{cur['id']}"):
+                # Типът пак определя ДДС/фискална група (един източник на истина).
+                type_options = ["Книга", "Подаръчен ваучер"]
+                type_index = 0 if cur["product_type"] == "Книга" else 1
+                e_type = st.selectbox("Тип артикул", type_options, index=type_index,
+                                      help="Книга = 9% ДДС, група Б. Ваучер = 0% ДДС, група Д.")
+                if e_type == "Книга":
+                    e_vat, e_fiscal, e_type_db = 9.0, "Б", "Книга"
+                else:
+                    e_vat, e_fiscal, e_type_db = 0.0, "Д", "Ваучер"
+
+                col1, col2 = st.columns(2)
+                with col1:
+                    e_isbn = st.text_input("ISBN / Баркод *", value=cur["isbn"])
+                    e_title = st.text_input("Заглавие *", value=cur["title"])
+                    e_author = st.text_input("Автор", value=cur["author"] or "")
+                    sup_names = list(supplier_map.keys())
+                    cur_sup_name = id_to_supplier.get(cur["supplier_id"], sup_names[0])
+                    e_supplier_name = st.selectbox(
+                        "Доставчик *", sup_names,
+                        index=sup_names.index(cur_sup_name) if cur_sup_name in sup_names else 0)
+                    e_genre = st.text_input("Жанр", value=cur["genre"] or "")
+                with col2:
+                    e_cover_price = st.number_input(
+                        "Цена (с ДДС)" if e_type == "Книга" else "Номинал",
+                        min_value=0.0, value=float(cur["cover_price"]), step=0.5)
+                    st.number_input("ДДС ставка (%)", value=e_vat, disabled=True)
+                    st.text_input("Фискална група", value=e_fiscal, disabled=True)
+                    e_year = st.number_input("Година", min_value=0,
+                                             value=int(cur["year"] or 0), step=1)
+                    e_cover_type = st.text_input("Корица", value=cur["cover_type"] or "")
+                e_description = st.text_area("Описание", value=cur["description"] or "")
+
+                save = st.form_submit_button("Запази промените", type="primary")
+                if save:
+                    if not e_isbn.strip() or not e_title.strip():
+                        st.error("ISBN и Заглавие са задължителни.")
+                    else:
+                        ok, msg = db.update_product(
+                            cur["id"], e_isbn.strip(), e_title.strip(), e_author,
+                            supplier_map[e_supplier_name], e_cover_price, e_vat,
+                            e_year, e_cover_type, e_genre, e_description,
+                            product_type=e_type_db, fiscal_group=e_fiscal)
+                        (st.success if ok else st.error)(msg)
+                        if ok:
+                            st.rerun()
+
+            # Изтриване — двустепенно потвърждение. DB слоят отказва, ако има история.
+            st.divider()
+            st.subheader("Изтриване")
+            if st.button("🗑️ Изтрий този артикул"):
+                st.session_state.pending_delete_product = cur["id"]
+            if st.session_state.get("pending_delete_product") == cur["id"]:
+                st.warning(f"Наистина ли да изтрия „{cur['title']}“? Необратимо е. "
+                           "(Артикул с история не може да се изтрие.)")
+                cA, cB = st.columns(2)
+                with cA:
+                    if st.button("Да, изтрий", type="primary", key="confirm_del_prod"):
+                        ok, msg = db.delete_product(cur["id"])
+                        (st.success if ok else st.error)(msg)
+                        st.session_state.pending_delete_product = None
+                        if ok:
+                            st.rerun()
+                with cB:
+                    if st.button("Отказ", key="cancel_del_prod"):
+                        st.session_state.pending_delete_product = None
+                        st.rerun()
 
 
 # ----- ЕКРАН: ДОСТАВКИ (Модул 3) -----
