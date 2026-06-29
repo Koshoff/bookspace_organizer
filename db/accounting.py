@@ -169,49 +169,91 @@ def get_consignment_report(date_from, date_to):
     към издателството (колко им дължим за периода).
     """
     conn = get_connection()
+
+    # За всяка книга вадим:
+    #  - консигнационни доставени общо (за всички време),
+    #  - продадени ПРЕДИ периода (за да знаем колко консигнация вече е изядена),
+    #  - продадени В периода, с количествено-претеглени суми доставна/продажна.
+    # Правилото "консигнация се продава първа" се прилага през ВРЕМЕТО, не само
+    # вътре в периода — иначе по-стари продажби биха се отчели повторно.
     rows = conn.execute(
         """
         WITH
-        -- Колко КОНСИГНАЦИОННИ бройки са доставени за всяка книга (общо, за всички време).
         consigned AS (
             SELECT product_id, SUM(quantity) AS consigned_qty
             FROM delivery_items
             WHERE settlement_type = 'Консигнация'
             GROUP BY product_id
         ),
-        -- Колко са ПРОДАДЕНИ за периода (без отказани), за всяка книга.
-        sold AS (
-            SELECT si.product_id,
-                   SUM(si.quantity) AS sold_qty,
-                   -- средни цени, за да смятаме дължимо и марж на бройка
-                   AVG(si.cost_price) AS avg_cost,
-                   AVG(si.sale_price) AS avg_sale
+        sold_before AS (
+            SELECT si.product_id, SUM(si.quantity) AS qty
             FROM sale_items si
             JOIN sales s ON s.id = si.sale_id
             WHERE s.status != 'Отказана'
+              AND si.product_id IS NOT NULL
+              AND date(s.created_at) < ?
+            GROUP BY si.product_id
+        ),
+        sold_period AS (
+            SELECT si.product_id,
+                   SUM(si.quantity) AS qty,
+                   -- количествено претеглени суми (не AVG на единичните цени!)
+                   SUM(si.quantity * si.cost_price) AS cost_val,
+                   SUM(si.quantity * si.sale_price) AS sale_val
+            FROM sale_items si
+            JOIN sales s ON s.id = si.sale_id
+            WHERE s.status != 'Отказана'
+              AND si.product_id IS NOT NULL
               AND date(s.created_at) >= ? AND date(s.created_at) <= ?
             GROUP BY si.product_id
         )
         SELECT
             sup.name AS supplier_name,
-            -- Консигнационни продадени = по-малкото от (продадени, доставени консигнация).
-            -- MIN гарантира правилото "не повече от реално доставените консигнационни".
-            SUM(MIN(sold.sold_qty, consigned.consigned_qty)) AS sold_qty,
-            -- Дължимо към издателството: консигнационни продадени × доставна цена.
-            SUM(MIN(sold.sold_qty, consigned.consigned_qty) * sold.avg_cost) AS owed_to_publisher,
-            -- Марж на книжарницата върху тези консигнационни бройки.
-            SUM(MIN(sold.sold_qty, consigned.consigned_qty) * (sold.avg_sale - sold.avg_cost)) AS bookstore_margin
-        FROM sold
-        JOIN consigned ON consigned.product_id = sold.product_id
-        JOIN products p ON p.id = sold.product_id
+            c.consigned_qty,
+            COALESCE(sb.qty, 0) AS sold_before,
+            sp.qty            AS sold_period_qty,
+            sp.cost_val,
+            sp.sale_val
+        FROM sold_period sp
+        JOIN consigned c   ON c.product_id = sp.product_id
+        LEFT JOIN sold_before sb ON sb.product_id = sp.product_id
+        JOIN products p    ON p.id = sp.product_id
         JOIN suppliers sup ON sup.id = p.supplier_id
-        GROUP BY sup.id
-        ORDER BY sup.name
         """,
-        (date_from, date_to)
+        (date_from, date_from, date_to)
     ).fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+
+    # Прилагаме "консигнация първа" през времето и групираме по издателство.
+    by_supplier = {}
+    for r in rows:
+        consigned = r["consigned_qty"]
+        # Колко консигнация вече е изядена от продажбите ПРЕДИ периода.
+        consumed_before = min(r["sold_before"], consigned)
+        remaining_at_start = max(0, consigned - consumed_before)
+        # Консигнационни бройки, продадени В периода (не повече от останалите).
+        consign_sold = min(r["sold_period_qty"], remaining_at_start)
+        if consign_sold <= 0:
+            continue
+
+        # Количествено претеглени единични цени за периода.
+        period_qty = r["sold_period_qty"]
+        unit_cost = r["cost_val"] / period_qty if period_qty else 0
+        unit_sale = r["sale_val"] / period_qty if period_qty else 0
+
+        agg = by_supplier.setdefault(
+            r["supplier_name"],
+            {"supplier_name": r["supplier_name"], "sold_qty": 0,
+             "owed_to_publisher": 0.0, "bookstore_margin": 0.0})
+        agg["sold_qty"] += consign_sold
+        agg["owed_to_publisher"] += consign_sold * unit_cost
+        agg["bookstore_margin"] += consign_sold * (unit_sale - unit_cost)
+
+    result = sorted(by_supplier.values(), key=lambda a: a["supplier_name"])
+    for a in result:
+        a["owed_to_publisher"] = round(a["owed_to_publisher"], 2)
+        a["bookstore_margin"] = round(a["bookstore_margin"], 2)
+    return result
 
 # ---------- ГЕНЕРИРАНЕ НА EXCEL ДНЕВНИК ----------
 
