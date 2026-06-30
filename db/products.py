@@ -117,6 +117,35 @@ def delete_product(product_id):
         conn.close()
 
 
+def get_products_by_isbns(isbns):
+    """
+    Връща {isbn: {...}} за подадените ISBN-и — с доставчик, неговия имейл,
+    корична и ПОСЛЕДНА доставна цена. Една заявка вместо N, за импорта на
+    файл с продажби от онлайн магазина.
+    """
+    if not isbns:
+        return {}
+    conn = get_connection()
+    # Динамичен брой плейсхолдъри ?,?,? — БРОЯТ е от кода, СТОЙНОСТИТЕ са
+    # параметризирани (не се лепят в SQL), значи няма SQL injection.
+    placeholders = ",".join("?" * len(isbns))
+    rows = conn.execute(
+        f"""SELECT p.id, p.isbn, p.title, p.author, p.cover_price,
+                   sup.id    AS supplier_id,
+                   sup.name  AS supplier_name,
+                   sup.email AS supplier_email,
+                   COALESCE((SELECT di.delivery_price FROM delivery_items di
+                             WHERE di.product_id = p.id
+                             ORDER BY di.id DESC LIMIT 1), 0) AS last_cost
+            FROM products p
+            JOIN suppliers sup ON sup.id = p.supplier_id
+            WHERE p.isbn IN ({placeholders})""",
+        list(isbns)
+    ).fetchall()
+    conn.close()
+    return {r["isbn"]: dict(r) for r in rows}
+
+
 def get_products_for_delivery():
     """Връща книгите във вид, удобен за избор при доставка:
     {ISBN: {id, title, author, supplier_id}}. Ползва се за сканиране по ISBN."""

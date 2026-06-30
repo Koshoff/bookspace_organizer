@@ -1326,67 +1326,168 @@ elif section == "Журнал продажби":
 # ----- ЕКРАН: АВТОМАТИЧНИ ЗАЯВКИ КЪМ ИЗДАТЕЛСТВА -----
 elif section == "Автоматични заявки":
     st.title("📨 Автоматични заявки към издателства")
-    st.caption("Обобщава продажбите за избран ден и изпраща на всяко "
-               "издателство заявка за зареждане с продадените му книги.")
+    st.caption("Заявки за зареждане до издателствата — от продажбите в системата "
+               "или от експортен файл на онлайн магазина.")
 
-    # Филтър за ден — по подразбиране днес.
-    order_day = st.date_input("Обобщи продажбите за ден", value=date.today(),
-                              key="reorder_day")
+    tab_internal, tab_file = st.tabs(["От продажбите в системата",
+                                      "Импорт от файл (онлайн магазин)"])
 
-    # Голям контрастен бутон — главното действие на екрана.
-    if st.button("📨 ИЗПРАТИ АВТОМАТИЧНИ ЗАЯВКИ ЗА ЗАРЕЖДАНЕ",
-                 type="primary", use_container_width=True):
-        st.session_state.reorder_run_day = str(order_day)
+    # ============ ТАБ 1: ОТ ПРОДАЖБИТЕ В СИСТЕМАТА ============
+    with tab_internal:
+        # Филтър за ден — по подразбиране днес.
+        order_day = st.date_input("Обобщи продажбите за ден", value=date.today(),
+                                  key="reorder_day")
 
-    # Изпълняваме само ако бутонът е натиснат за този ден (пази при rerun).
-    if st.session_state.get("reorder_run_day") == str(order_day):
-        rows = db.get_daily_supplier_reorders(str(order_day))
+        # Голям контрастен бутон — главното действие на екрана.
+        if st.button("📨 ИЗПРАТИ АВТОМАТИЧНИ ЗАЯВКИ ЗА ЗАРЕЖДАНЕ",
+                     type="primary", use_container_width=True, key="send_internal"):
+            st.session_state.reorder_run_day = str(order_day)
 
-        if not rows:
-            st.info(f"Няма продадени книги за {order_day}. Няма какво да се заяви.")
-        else:
-            # --- Стъпка Б: групираме продадените книги по доставчик ---
-            by_supplier = {}
-            for r in rows:
-                grp = by_supplier.setdefault(r["supplier_id"], {
-                    "name": r["supplier_name"],
-                    "email": r["supplier_email"],
-                    "items": [],
-                })
-                grp["items"].append(r)
+        # Изпълняваме само ако бутонът е натиснат за този ден (пази при rerun).
+        if st.session_state.get("reorder_run_day") == str(order_day):
+            rows = db.get_daily_supplier_reorders(str(order_day))
 
-            st.success(f"Намерени са продажби за **{len(by_supplier)}** "
-                       f"издателства на {order_day}.")
-            st.divider()
+            if not rows:
+                st.info(f"Няма продадени книги за {order_day}. Няма какво да се заяви.")
+            else:
+                # --- Стъпка Б: групираме продадените книги по доставчик ---
+                by_supplier = {}
+                for r in rows:
+                    grp = by_supplier.setdefault(r["supplier_id"], {
+                        "name": r["supplier_name"],
+                        "email": r["supplier_email"],
+                        "items": [],
+                    })
+                    grp["items"].append(r)
 
-            # --- Стъпка В: цикъл по доставчиците и изпращане ---
-            for supplier_id, grp in by_supplier.items():
-                # Всяко издателство в собствен заоблен контейнер.
-                with st.container(border=True):
-                    st.subheader(f"🏢 {grp['name']}")
+                st.success(f"Намерени са продажби за **{len(by_supplier)}** "
+                           f"издателства на {order_day}.")
+                st.divider()
 
-                    # Стъпка Г: красивата HTML таблица (Sleek Monochrome).
-                    html_table = mailer.build_order_html_table(grp["items"])
+                # --- Стъпка В: цикъл по доставчиците и изпращане ---
+                for supplier_id, grp in by_supplier.items():
+                    # Всяко издателство в собствен заоблен контейнер.
+                    with st.container(border=True):
+                        st.subheader(f"🏢 {grp['name']}")
 
-                    # Преглед на самия имейл (както ще го види издателството).
-                    with st.expander("Преглед на имейла"):
-                        email_html = mailer.build_order_email_html(
-                            grp["name"], str(order_day), html_table)
-                        st.markdown(email_html, unsafe_allow_html=True)
+                        # Стъпка Г: красивата HTML таблица (Sleek Monochrome).
+                        html_table = mailer.build_order_html_table(grp["items"])
 
-                    total_units = sum(i["total_sold"] for i in grp["items"])
-                    st.caption(f"{len(grp['items'])} заглавия · "
-                               f"{total_units} бройки за заявка")
+                        # Преглед на самия имейл (както ще го види издателството).
+                        with st.expander("Преглед на имейла"):
+                            email_html = mailer.build_order_email_html(
+                                grp["name"], str(order_day), html_table)
+                            st.markdown(email_html, unsafe_allow_html=True)
 
-                    # Изпращане — симулация. Ако имейлът липсва/невалиден, спираме
-                    # с ясно предупреждение (имейлът е задължителен по картотека).
-                    if not mailer.is_valid_email(grp["email"]):
-                        st.warning(f"⚠️ Издателство „{grp['name']}“ няма валиден "
-                                   f"имейл в картотеката. Заявката не е изпратена. "
-                                   f"Допълнете имейла в раздел „Доставчици“.")
+                        total_units = sum(i["total_sold"] for i in grp["items"])
+                        st.caption(f"{len(grp['items'])} заглавия · "
+                                   f"{total_units} бройки за заявка")
+
+                        # Изпращане — симулация. Ако имейлът липсва/невалиден,
+                        # предупреждаваме (имейлът е задължителен по картотека).
+                        if not mailer.is_valid_email(grp["email"]):
+                            st.warning(f"⚠️ Издателство „{grp['name']}“ няма валиден "
+                                       f"имейл в картотеката. Заявката не е изпратена. "
+                                       f"Допълнете имейла в раздел „Доставчици“.")
+                        else:
+                            mailer.send_supplier_email(
+                                grp["name"], grp["email"], html_table)
+
+    # ============ ТАБ 2: ИМПОРТ ОТ ФАЙЛ (ОНЛАЙН МАГАЗИН) ============
+    with tab_file:
+        st.caption("Качи експорт от онлайн магазина. Системата разпознава "
+                   "ISBN/количество, свързва ги с каталога и групира заявката "
+                   "по издателство.")
+
+        uploaded = st.file_uploader(
+            "Качи експортен файл с продажби от сайта (Excel / CSV)",
+            type=["xlsx", "csv"])
+
+        if uploaded is not None:
+            # --- Стъпка 1: четене на файла ---
+            try:
+                df = importer.read_sales_file(uploaded)
+            except Exception as e:
+                st.error(f"Неуспешно прочитане на файла: {e}")
+                df = None
+
+            if df is not None:
+                cols = importer.detect_columns(df)
+                if not cols["isbn"] or not cols["qty"]:
+                    st.error("Не открих колони за ISBN и Количество. Очаквам "
+                             "колони като „ISBN/Баркод“ и „Количество“.")
+                else:
+                    parsed = importer.parse_rows(df, cols)
+                    if not parsed:
+                        st.warning("Файлът е прочетен, но няма валидни редове "
+                                   "(липсва ISBN или количеството е 0).")
                     else:
-                        mailer.send_supplier_email(
-                            grp["name"], grp["email"], html_table)
+                        # --- Стъпка 2: свързване с каталога (една заявка) ---
+                        lookup = db.get_products_by_isbns(
+                            [p["isbn"] for p in parsed])
+                        # --- Стъпка 3: групиране по доставчик ---
+                        groups, unmatched = importer.group_by_supplier(parsed, lookup)
+
+                        matched = sum(len(g["items"]) for g in groups.values())
+                        st.success(f"Успешно обработени {matched} продукта от файла!")
+
+                        if unmatched:
+                            shown = ", ".join(unmatched[:10])
+                            more = " …" if len(unmatched) > 10 else ""
+                            st.warning(f"⚠️ {len(unmatched)} ISBN-а липсват в "
+                                       f"каталога и са пропуснати: {shown}{more}")
+
+                        if not groups:
+                            st.info("Няма съвпадащи с каталога продукти за заявка.")
+                        else:
+                            st.divider()
+                            # --- Стъпка 3 (визуализация): таблица по доставчик ---
+                            for supplier_id, g in groups.items():
+                                with st.container(border=True):
+                                    st.subheader(f"🏢 {g['name']}")
+                                    tdf = pd.DataFrame(g["items"])
+                                    tdf.insert(0, "Доставчик", g["name"])
+                                    tdf = tdf.rename(columns={
+                                        "isbn": "ISBN", "title": "Заглавие",
+                                        "delivery_price": "Доставна цена",
+                                        "cover_price": "Корична цена",
+                                        "qty": "Брой поръчани",
+                                        "line_delivery": "Обща доставна сума",
+                                    })
+                                    view_cols = ["Доставчик", "ISBN", "Заглавие",
+                                                 "Доставна цена", "Корична цена",
+                                                 "Брой поръчани", "Обща доставна сума"]
+                                    st.dataframe(tdf[view_cols], width='stretch',
+                                                 hide_index=True)
+                                    st.caption(
+                                        f"{len(g['items'])} заглавия · "
+                                        f"{g['total_qty']} бройки · обща доставна "
+                                        f"{g['total_delivery']:.2f} лв.")
+                                    if not mailer.is_valid_email(g["email"]):
+                                        st.warning(f"⚠️ „{g['name']}“ няма валиден "
+                                                   "имейл — няма да получи заявка.")
+
+                            st.divider()
+                            # --- Стъпка 4: изпращане на данните ОТ ФАЙЛА ---
+                            if st.button("📨 ИЗПРАТИ АВТОМАТИЧНИ ЗАЯВКИ ЗА ЗАРЕЖДАНЕ",
+                                         type="primary", use_container_width=True,
+                                         key="send_from_file"):
+                                sent = 0
+                                for supplier_id, g in groups.items():
+                                    if not mailer.is_valid_email(g["email"]):
+                                        continue
+                                    # Към формата на имейл таблицата (qty->total_sold).
+                                    email_items = [{
+                                        "isbn": i["isbn"], "title": i["title"],
+                                        "author": i["author"], "total_sold": i["qty"],
+                                    } for i in g["items"]]
+                                    html_table = mailer.build_order_html_table(email_items)
+                                    mailer.send_supplier_email(
+                                        g["name"], g["email"], html_table)
+                                    sent += 1
+                                if sent == 0:
+                                    st.warning("Няма издателство с валиден имейл — "
+                                               "нищо не е изпратено.")
 
 
 # ----- ЕКРАН: КРЕДИТНИ ИЗВЕСТИЯ (Модул 6) -----
