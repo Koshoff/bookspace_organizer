@@ -111,57 +111,162 @@ def parse_rows(df, cols):
     return list(agg.values())
 
 
-def group_by_supplier(parsed_rows, lookup):
-    """
-    Групира редовете по доставчик чрез lookup ({isbn: product_info от базата}).
+# ---------- ЗАСИЧАНЕ В ПАМЕТТА (по ISBN и по заглавие) ----------
+# Кратки/служебни думи, които не носят смисъл при сравнение на заглавия.
+# Само истински служебни думи — НЕ махаме думи, които могат да са част от
+# заглавие (напр. „под“ в „Под игото“), за да не осакатим късите заглавия.
+_STOPWORDS = {
+    "и", "на", "за", "от", "или", "the", "a", "an", "of", "and", "or",
+}
 
-    Връща (groups, unmatched):
-      groups = {supplier_id: {supplier_id, name, email, items[], total_qty,
-                              total_delivery}}
-      unmatched = [isbn, ...]  — ISBN-и от файла, които липсват в каталога.
+
+def normalize_title(value):
+    """Нормализира заглавие за сравнение: малки букви, без пунктуация/цифри-шум,
+    единични интервали. Работи и за кирилица, и за латиница."""
+    s = str(value or "").lower()
+    out = []
+    for ch in s:
+        if ch.isalnum():          # буква или цифра (вкл. кирилица)
+            out.append(ch)
+        else:
+            out.append(" ")
+    return " ".join("".join(out).split())
+
+
+def title_tokens(value):
+    """Множество от значими думи в заглавие (>=3 символа, без стоп-думи)."""
+    return {t for t in normalize_title(value).split()
+            if len(t) >= 3 and t not in _STOPWORDS}
+
+
+def build_catalog_index(catalog):
+    """
+    Строи индексите за бързо засичане ВЕДНЪЖ:
+      - isbn_index: {clean_isbn: product}
+      - title_index: [(token_set, product), ...]
+    """
+    isbn_index = {}
+    title_index = []
+    for p in catalog:
+        key = clean_isbn(p.get("isbn"))
+        if key:
+            isbn_index[key] = p
+        # Пазим и нормализирания вид — нужен за точно сравнение на едно-думни
+        # заглавия (където припокриването на думи е твърде слаб сигнал).
+        title_index.append((title_tokens(p.get("title")),
+                            normalize_title(p.get("title")), p))
+    return isbn_index, title_index
+
+
+def _best_title_match(file_title, title_index, min_score):
+    """
+    Намира най-доброто съвпадение по заглавие чрез припокриване на значими думи.
+    КОНСЕРВАТИВНО, за да не лепне грешна книга:
+      - при заглавия с >=2 значими думи: иска поне 2 общи думи;
+      - при едно-думни заглавия: иска ТОЧНО равенство на нормализирания текст
+        (иначе „Време" би лепнало „Време разделно");
+      - накрая: резултат >= min_score и ясен лидер пред втория кандидат.
+    """
+    ftok = title_tokens(file_title)
+    if not ftok:
+        return None
+    fnorm = normalize_title(file_title)
+    best, best_score, second_score = None, 0.0, 0.0
+    for ctok, cnorm, p in title_index:
+        inter = len(ftok & ctok)
+        if inter == 0:
+            continue
+        min_len = min(len(ftok), len(ctok))
+        if min_len >= 2:
+            if inter < 2:
+                continue
+            score = max(inter / len(ftok | ctok), inter / min_len)
+        else:
+            # едно от заглавията е едно-думно — приемаме само точно съвпадение
+            if fnorm != cnorm:
+                continue
+            score = 1.0
+        if score > best_score:
+            best, second_score, best_score = p, best_score, score
+        elif score > second_score:
+            second_score = score
+    if best_score >= min_score and (best_score - second_score) >= 0.1:
+        return best
+    return None
+
+
+def resolve_rows(parsed_rows, catalog, min_score=0.6):
+    """
+    Засича всеки ред от файла срещу каталога — първо по точен ISBN, после по
+    заглавие (в паметта, без заявка на ред). Връща (matched, unmatched):
+      matched   = [{product, qty, method}]  (method = 'isbn' | 'title')
+      unmatched = [{isbn, title, qty, cover_price}]  — за буферния панел.
+    """
+    isbn_index, title_index = build_catalog_index(catalog)
+    matched, unmatched = [], []
+    for r in parsed_rows:
+        product, method = None, None
+        isbn = r.get("isbn")
+        if isbn and isbn in isbn_index:
+            product, method = isbn_index[isbn], "isbn"
+        elif r.get("title"):
+            cand = _best_title_match(r["title"], title_index, min_score)
+            if cand is not None:
+                product, method = cand, "title"
+
+        if product is None:
+            unmatched.append({
+                "isbn": r.get("isbn") or "",
+                "title": r.get("title") or "",
+                "qty": r["qty"],
+                "cover_price": r.get("sale_price") or 0.0,
+            })
+        else:
+            matched.append({"product": product, "qty": r["qty"], "method": method})
+    return matched, unmatched
+
+
+def _unit_delivery_cost(product):
+    """Единична доставна цена: последната реална доставна цена, а ако книгата
+    още няма доставки — оценка от стандартната отстъпка върху коричната."""
+    last_cost = product.get("last_cost") or 0
+    if last_cost:
+        return round(last_cost, 2)
+    disc = product.get("default_discount") or 0
+    return round((product.get("cover_price") or 0) * (1 - disc / 100), 2)
+
+
+def group_matched(matched):
+    """
+    Групира засечените продукти по доставчик. Коричната цена идва от каталога
+    (файлът няма цени), а доставната се изчислява чрез _unit_delivery_cost.
+
+    Връща {supplier_id: {supplier_id, name, email, items[], total_qty,
+                         total_delivery}}.
     """
     groups = {}
-    unmatched = []
-    for r in parsed_rows:
-        info = lookup.get(r["isbn"])
-        if info is None:
-            # Непознат ISBN — връщаме наличната от файла информация, за да може
-            # потребителят бързо да го създаде (ISBN, заглавие, корична цена).
-            unmatched.append({
-                "isbn": r["isbn"],
-                "title": r.get("title") or "",
-                "cover_price": r.get("sale_price") or 0.0,
-                "qty": r["qty"],
-            })
-            continue
-        # Единична доставна цена: последната доставна цена, а ако книгата още
-        # няма доставки (напр. току-що създадена) — оценка от стандартната
-        # отстъпка на доставчика върху коричната цена.
-        last_cost = info.get("last_cost") or 0
-        if last_cost:
-            unit_cost = round(last_cost, 2)
-        else:
-            disc = info.get("default_discount") or 0
-            unit_cost = round((info.get("cover_price") or 0) * (1 - disc / 100), 2)
-
-        g = groups.setdefault(info["supplier_id"], {
-            "supplier_id": info["supplier_id"],
-            "name": info["supplier_name"],
-            "email": info["supplier_email"],
+    for m in matched:
+        p, qty = m["product"], m["qty"]
+        unit_cost = _unit_delivery_cost(p)
+        g = groups.setdefault(p["supplier_id"], {
+            "supplier_id": p["supplier_id"],
+            "name": p["supplier_name"],
+            "email": p["supplier_email"],
             "items": [],
             "total_qty": 0,
             "total_delivery": 0.0,
         })
-        line_delivery = round(r["qty"] * unit_cost, 2)
+        line_delivery = round(qty * unit_cost, 2)
         g["items"].append({
-            "isbn": info["isbn"],
-            "title": info["title"],
-            "author": info["author"],
+            "isbn": p["isbn"],
+            "title": p["title"],
+            "author": p["author"],
             "delivery_price": unit_cost,
-            "cover_price": info["cover_price"],
-            "qty": r["qty"],
+            "cover_price": p["cover_price"],
+            "qty": qty,
             "line_delivery": line_delivery,
+            "method": m["method"],
         })
-        g["total_qty"] += r["qty"]
+        g["total_qty"] += qty
         g["total_delivery"] = round(g["total_delivery"] + line_delivery, 2)
-    return groups, unmatched
+    return groups

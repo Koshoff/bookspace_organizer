@@ -1413,23 +1413,29 @@ elif section == "Автоматични заявки":
 
             if df is not None:
                 cols = importer.detect_columns(df)
-                if not cols["isbn"] or not cols["qty"]:
-                    st.error("Не открих колони за ISBN и Количество. Очаквам "
-                             "колони като „ISBN/Баркод“ и „Количество“.")
+                if not cols["qty"] or (not cols["isbn"] and not cols["title"]):
+                    st.error("Не открих нужните колони. Очаквам „Количество“ и "
+                             "поне едно от „ISBN/Баркод“ или „Заглавие“.")
                 else:
                     parsed = importer.parse_rows(df, cols)
                     if not parsed:
                         st.warning("Файлът е прочетен, но няма валидни редове "
-                                   "(липсва ISBN или количеството е 0).")
+                                   "(липсва ISBN/заглавие или количеството е 0).")
                     else:
-                        # --- Стъпка 2: свързване с каталога (една заявка) ---
-                        lookup = db.get_products_by_isbns(
-                            [p["isbn"] for p in parsed])
+                        # --- Стъпка 1+2: едно зареждане на каталога, после
+                        # засичане в паметта (по ISBN, после по заглавие) ---
+                        catalog = db.get_catalog_for_matching()
+                        matched_list, unmatched = importer.resolve_rows(parsed, catalog)
                         # --- Стъпка 3: групиране по доставчик ---
-                        groups, unmatched = importer.group_by_supplier(parsed, lookup)
+                        groups = importer.group_matched(matched_list)
 
-                        matched = sum(len(g["items"]) for g in groups.values())
-                        st.success(f"Успешно обработени {matched} продукта от файла!")
+                        n_matched = len(matched_list)
+                        by_isbn = sum(1 for m in matched_list if m["method"] == "isbn")
+                        by_title = sum(1 for m in matched_list if m["method"] == "title")
+                        st.success(f"Успешно обработени {n_matched} продукта от файла!")
+                        if n_matched:
+                            st.caption(f"Засечени: {by_isbn} по ISBN · "
+                                       f"{by_title} по заглавие.")
 
                         # --- Стъпка 3 (визуализация): таблица по доставчик ---
                         if groups:
@@ -1443,12 +1449,12 @@ elif section == "Автоматични заявки":
                                         "isbn": "ISBN", "title": "Заглавие",
                                         "delivery_price": "Доставна цена",
                                         "cover_price": "Корична цена",
-                                        "qty": "Брой поръчани",
-                                        "line_delivery": "Обща доставна сума",
+                                        "qty": "Бройка за поръчка",
+                                        "line_delivery": "Обща стойност",
                                     })
                                     view_cols = ["Доставчик", "ISBN", "Заглавие",
                                                  "Доставна цена", "Корична цена",
-                                                 "Брой поръчани", "Обща доставна сума"]
+                                                 "Бройка за поръчка", "Обща стойност"]
                                     st.dataframe(tdf[view_cols], width='stretch',
                                                  hide_index=True)
                                     st.caption(
@@ -1505,23 +1511,27 @@ elif section == "Автоматични заявки":
                                 unknown_df = pd.DataFrame([{
                                     "ISBN": u["isbn"],
                                     "Заглавие": u["title"] or "",
+                                    "Количество": int(u["qty"]),
                                     "Корична цена": float(u["cover_price"] or 0.0),
                                     "Доставчик/Издателство": "",
                                 } for u in unmatched])
 
-                                st.caption("Избери издателство за всеки ред. Доставната "
-                                           "цена се изчислява автоматично от стандартната "
-                                           "отстъпка на доставчика.")
+                                st.caption("Въведи продажна (корична) цена и избери "
+                                           "издателство за всеки ред. Доставната цена се "
+                                           "изчислява автоматично от стандартната отстъпка "
+                                           "на доставчика. (За редове само със заглавие "
+                                           "попълни и ISBN.)")
                                 edited = st.data_editor(
                                     unknown_df, key="unknown_products_editor",
                                     width='stretch', hide_index=True,
                                     column_config={
-                                        "ISBN": st.column_config.TextColumn(
-                                            "ISBN", disabled=True),
+                                        "ISBN": st.column_config.TextColumn("ISBN"),
                                         "Заглавие": st.column_config.TextColumn("Заглавие"),
+                                        "Количество": st.column_config.NumberColumn(
+                                            "Количество (от файла)", disabled=True),
                                         "Корична цена": st.column_config.NumberColumn(
-                                            "Корична цена", min_value=0.0, step=0.5,
-                                            format="%.2f"),
+                                            "Въведи Продажна (Корична) цена",
+                                            min_value=0.0, step=0.5, format="%.2f"),
                                         "Доставчик/Издателство": st.column_config.SelectboxColumn(
                                             "Избери Доставчик/Издателство",
                                             options=sup_names),
@@ -1536,7 +1546,11 @@ elif section == "Автоматични заявки":
                                         if not sup_name or sup_name not in sup_name_to_id:
                                             skipped += 1
                                             continue
-                                        isbn = str(row["ISBN"]).strip()
+                                        isbn = str(row["ISBN"] or "").strip()
+                                        if not isbn:
+                                            # ISBN е задължителен ключ в каталога.
+                                            errors.append("(ред без ISBN) — попълни ISBN")
+                                            continue
                                         title = (str(row["Заглавие"]) or "").strip() or isbn
                                         try:
                                             cover = float(row["Корична цена"] or 0.0)
