@@ -16,7 +16,9 @@ ISBN_ALIASES = ["isbn", "isbn/баркод", "баркод", "barcode", "ean", "
 QTY_ALIASES = ["количество", "брой", "бройки", "quantity", "qty",
                "продадено количество", "продадени", "sold", "count"]
 PRICE_ALIASES = ["продажна цена", "sale price", "unit price", "единична цена",
-                 "продажна", "price", "цена"]
+                 "продажна", "price", "цена", "корична цена", "корична"]
+TITLE_ALIASES = ["заглавие", "title", "наименование", "име на продукта",
+                 "product name", "name", "продукт", "книга"]
 
 
 def read_sales_file(uploaded_file):
@@ -46,6 +48,7 @@ def detect_columns(df):
         "isbn": _find_column(df.columns, ISBN_ALIASES),
         "qty": _find_column(df.columns, QTY_ALIASES),
         "price": _find_column(df.columns, PRICE_ALIASES),
+        "title": _find_column(df.columns, TITLE_ALIASES),
     }
 
 
@@ -74,6 +77,7 @@ def parse_rows(df, cols):
     isbn_col = cols.get("isbn")
     qty_col = cols.get("qty")
     price_col = cols.get("price")
+    title_col = cols.get("title")
 
     agg = {}
     for _, row in df.iterrows():
@@ -92,8 +96,17 @@ def parse_rows(df, cols):
                 sale_price = float(row[price_col])
             except (ValueError, TypeError):
                 sale_price = None
+        # Заглавие от файла (за непознатите ISBN-и, които ще се създават).
+        title = ""
+        if title_col is not None:
+            tv = row[title_col]
+            if not (tv is None or (isinstance(tv, float) and pd.isna(tv))):
+                title = str(tv).strip()
+
         entry = agg.setdefault(isbn, {"isbn": isbn, "qty": 0,
-                                      "sale_price": sale_price})
+                                      "sale_price": sale_price, "title": title})
+        if not entry.get("title") and title:   # пазим първото непразно заглавие
+            entry["title"] = title
         entry["qty"] += qty
     return list(agg.values())
 
@@ -112,8 +125,25 @@ def group_by_supplier(parsed_rows, lookup):
     for r in parsed_rows:
         info = lookup.get(r["isbn"])
         if info is None:
-            unmatched.append(r["isbn"])
+            # Непознат ISBN — връщаме наличната от файла информация, за да може
+            # потребителят бързо да го създаде (ISBN, заглавие, корична цена).
+            unmatched.append({
+                "isbn": r["isbn"],
+                "title": r.get("title") or "",
+                "cover_price": r.get("sale_price") or 0.0,
+                "qty": r["qty"],
+            })
             continue
+        # Единична доставна цена: последната доставна цена, а ако книгата още
+        # няма доставки (напр. току-що създадена) — оценка от стандартната
+        # отстъпка на доставчика върху коричната цена.
+        last_cost = info.get("last_cost") or 0
+        if last_cost:
+            unit_cost = round(last_cost, 2)
+        else:
+            disc = info.get("default_discount") or 0
+            unit_cost = round((info.get("cover_price") or 0) * (1 - disc / 100), 2)
+
         g = groups.setdefault(info["supplier_id"], {
             "supplier_id": info["supplier_id"],
             "name": info["supplier_name"],
@@ -122,12 +152,12 @@ def group_by_supplier(parsed_rows, lookup):
             "total_qty": 0,
             "total_delivery": 0.0,
         })
-        line_delivery = round(r["qty"] * info["last_cost"], 2)
+        line_delivery = round(r["qty"] * unit_cost, 2)
         g["items"].append({
             "isbn": info["isbn"],
             "title": info["title"],
             "author": info["author"],
-            "delivery_price": info["last_cost"],
+            "delivery_price": unit_cost,
             "cover_price": info["cover_price"],
             "qty": r["qty"],
             "line_delivery": line_delivery,

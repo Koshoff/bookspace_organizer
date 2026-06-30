@@ -1431,17 +1431,9 @@ elif section == "Автоматични заявки":
                         matched = sum(len(g["items"]) for g in groups.values())
                         st.success(f"Успешно обработени {matched} продукта от файла!")
 
-                        if unmatched:
-                            shown = ", ".join(unmatched[:10])
-                            more = " …" if len(unmatched) > 10 else ""
-                            st.warning(f"⚠️ {len(unmatched)} ISBN-а липсват в "
-                                       f"каталога и са пропуснати: {shown}{more}")
-
-                        if not groups:
-                            st.info("Няма съвпадащи с каталога продукти за заявка.")
-                        else:
+                        # --- Стъпка 3 (визуализация): таблица по доставчик ---
+                        if groups:
                             st.divider()
-                            # --- Стъпка 3 (визуализация): таблица по доставчик ---
                             for supplier_id, g in groups.items():
                                 with st.container(border=True):
                                     st.subheader(f"🏢 {g['name']}")
@@ -1488,6 +1480,90 @@ elif section == "Автоматични заявки":
                                 if sent == 0:
                                     st.warning("Няма издателство с валиден имейл — "
                                                "нищо не е изпратено.")
+                        else:
+                            st.info("Все още няма съвпадащи с каталога продукти "
+                                    "за заявка.")
+
+                        # --- ЗАЩИТА: панел за НЕПОЗНАТИ продукти ---
+                        # Не спираме работа — даваме възможност да се създадат на
+                        # момента и да влязат в заявките към доставчиците.
+                        if unmatched:
+                            st.divider()
+                            st.warning("⚠️ Открити са продукти от сайта, които "
+                                       "липсват в базата данни на Bookspace")
+
+                            sup_rows = db.get_all_suppliers()
+                            if not sup_rows:
+                                st.info("Първо добавете поне един доставчик в раздел "
+                                        "„Доставчици“, за да създадете липсващите книги.")
+                            else:
+                                sup_names = [s["name"] for s in sup_rows]
+                                sup_name_to_id = {s["name"]: s["id"] for s in sup_rows}
+
+                                # Динамична таблица: ISBN/Заглавие/Корична от файла,
+                                # плюс интерактивно падащо меню за доставчик на ред.
+                                unknown_df = pd.DataFrame([{
+                                    "ISBN": u["isbn"],
+                                    "Заглавие": u["title"] or "",
+                                    "Корична цена": float(u["cover_price"] or 0.0),
+                                    "Доставчик/Издателство": "",
+                                } for u in unmatched])
+
+                                st.caption("Избери издателство за всеки ред. Доставната "
+                                           "цена се изчислява автоматично от стандартната "
+                                           "отстъпка на доставчика.")
+                                edited = st.data_editor(
+                                    unknown_df, key="unknown_products_editor",
+                                    width='stretch', hide_index=True,
+                                    column_config={
+                                        "ISBN": st.column_config.TextColumn(
+                                            "ISBN", disabled=True),
+                                        "Заглавие": st.column_config.TextColumn("Заглавие"),
+                                        "Корична цена": st.column_config.NumberColumn(
+                                            "Корична цена", min_value=0.0, step=0.5,
+                                            format="%.2f"),
+                                        "Доставчик/Издателство": st.column_config.SelectboxColumn(
+                                            "Избери Доставчик/Издателство",
+                                            options=sup_names),
+                                    })
+
+                                if st.button("➕ СЪЗДАЙ И ДОБАВИ ЛИПСВАЩИТЕ ПРОДУКТИ",
+                                             type="primary", use_container_width=True,
+                                             key="create_missing_products"):
+                                    created, errors, skipped = 0, [], 0
+                                    for _, row in edited.iterrows():
+                                        sup_name = (row["Доставчик/Издателство"] or "").strip()
+                                        if not sup_name or sup_name not in sup_name_to_id:
+                                            skipped += 1
+                                            continue
+                                        isbn = str(row["ISBN"]).strip()
+                                        title = (str(row["Заглавие"]) or "").strip() or isbn
+                                        try:
+                                            cover = float(row["Корична цена"] or 0.0)
+                                        except (ValueError, TypeError):
+                                            cover = 0.0
+                                        # Създаваме книгата веднага (9% ДДС, група Б).
+                                        ok, msg = db.add_product(
+                                            isbn, title, "", sup_name_to_id[sup_name],
+                                            cover, 9.0, 0, "", "", "",
+                                            product_type="Книга", fiscal_group="Б")
+                                        if ok:
+                                            created += 1
+                                        else:
+                                            errors.append(f"{isbn}: {msg}")
+
+                                    if created:
+                                        st.success(f"✅ Успешно интегрирани {created} "
+                                                   "нови заглавия в каталога!")
+                                    if errors:
+                                        st.warning("Някои не бяха създадени:\n\n- "
+                                                   + "\n- ".join(errors))
+                                    if skipped and not created:
+                                        st.info("Избери издателство поне за един ред.")
+                                    if created:
+                                        # Реобработваме файла — създадените вече се
+                                        # разпознават и влизат в заявките за деня.
+                                        st.rerun()
 
 
 # ----- ЕКРАН: КРЕДИТНИ ИЗВЕСТИЯ (Модул 6) -----

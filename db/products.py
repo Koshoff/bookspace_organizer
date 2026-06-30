@@ -134,6 +134,7 @@ def get_products_by_isbns(isbns):
                    sup.id    AS supplier_id,
                    sup.name  AS supplier_name,
                    sup.email AS supplier_email,
+                   sup.default_discount AS default_discount,
                    COALESCE((SELECT di.delivery_price FROM delivery_items di
                              WHERE di.product_id = p.id
                              ORDER BY di.id DESC LIMIT 1), 0) AS last_cost
