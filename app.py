@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 from datetime import date, timedelta
 import pandas as pd
 import styles
@@ -849,22 +850,79 @@ elif section == "Доставки":
 elif section == "Нова продажба":
     st.title("Нова продажба")
 
+    # Канонични стойности за начина на плащане (както се пазят в базата).
+    PAY_CASH = "В брой (Каса)"
+    PAY_CARD = "Банков път / Карта"
+    PAY_COD = "Пощенски паричен превод (Куриер)"
+    LBL_CASH, LBL_CARD, LBL_COD = "В брой (F2)", "Карта (F4)", "Наложен платеж (F8)"
+    LBL_FINALIZE = "✅ ПРИКЛЮЧИ И ПЕЧАТАЙ БОН"
+    SCAN_LABEL = "Сканирай баркод (ISBN) — режим Светкавично сканиране"
+
     # Кошница за продажбата — пак в session_state.
     if "sale_cart" not in st.session_state:
         st.session_state.sale_cart = []
+    if "pos_payment" not in st.session_state:
+        st.session_state.pos_payment = PAY_COD   # както беше по подразбиране
 
-     # --- Горни полета: номера + начин на плащане ---
-    col1, col2, col3 = st.columns(3)
+    # След приключена продажба нулираме „получената сума" ПРЕДИ да се създаде
+    # полето (иначе Streamlit не позволява промяна след инстанцииране).
+    if st.session_state.pop("pos_reset_received", False):
+        st.session_state.pos_received = 0.0
+
+    # --- Callback за светкавичното сканиране ---
+    # Извиква се при Enter в полето за баркод (пистолетът праща Enter сам).
+    # Добавя книгата с 1 бр. или инкрементира, после ИЗЧИСТВА полето.
+    def pos_scan_add():
+        code = (st.session_state.get("pos_scan") or "").strip()
+        st.session_state.pos_scan = ""        # готово за следващ скан
+        if not code:
+            return
+        book = db.get_product_for_sale(code)
+        if book is None:
+            st.session_state.pos_flash = ("error", f"Няма книга с ISBN „{code}“.")
+            return
+        cart = st.session_state.sale_cart
+        for it in cart:
+            if it["product_id"] == book["id"]:
+                if book["stock"] < it["quantity"] + 1:
+                    st.session_state.pos_flash = (
+                        "error", f"Няма още наличност за „{book['title']}“ "
+                        f"(налични: {book['stock']}).")
+                else:
+                    it["quantity"] += 1
+                    st.session_state.pos_flash = (
+                        "success", f"+1 „{book['title']}“ → {it['quantity']} бр.")
+                return
+        if book["stock"] < 1:
+            st.session_state.pos_flash = (
+                "error", f"Няма наличност за „{book['title']}“.")
+            return
+        cart.append({
+            "product_id": book["id"], "title": book["title"],
+            "supplier_name": book["supplier_name"], "quantity": 1,
+            "cost_price": book["last_cost"], "sale_price": book["cover_price"],
+        })
+        st.session_state.pos_flash = ("success", f"Добавена „{book['title']}“")
+
+    # --- Горни полета: номера на поръчка/товарителница ---
+    col1, col2 = st.columns(2)
     with col1:
         order_number = st.text_input("Номер на поръчка")
     with col2:
         waybill_number = st.text_input("Номер на товарителница (Еконт/Спиди)")
-    with col3:
-        payment_method = st.selectbox("Начин на плащане", [
-            "Пощенски паричен превод (Куриер)",
-            "В брой (Каса)",
-            "Банков път / Карта",
-        ])
+
+    # --- Начин на плащане като БУТОНИ (за да са управляеми с F2/F4/F8) ---
+    st.caption("Начин на плащане  ·  бързи клавиши: F2 брой · F4 карта · F8 наложен платеж")
+    pay_cols = st.columns(3)
+    for col, (lbl, val) in zip(pay_cols,
+                               [(LBL_CASH, PAY_CASH), (LBL_CARD, PAY_CARD),
+                                (LBL_COD, PAY_COD)]):
+        active = st.session_state.pos_payment == val
+        if col.button(lbl, key=f"pay_{val}", width='stretch',
+                      type="primary" if active else "secondary"):
+            st.session_state.pos_payment = val
+            st.rerun()
+    payment_method = st.session_state.pos_payment
     # --- Опция: плащане с ваучер ---
     use_voucher = st.checkbox("Плащане с ваучер вместо избрания начин")
     voucher_validated = None    # ще пази валидирания ваучер, ако има
@@ -912,31 +970,17 @@ elif section == "Нова продажба":
         }
 
     st.divider()
-    st.subheader("Добавяне на стока чрез ISBN")
+    st.subheader("⚡ Светкавично сканиране")
 
-    # --- Добавяне на ред ---
-    sc1, sc2 = st.columns([3, 1])
-    with sc1:
-        sale_isbn = st.text_input("Сканирай/въведи ISBN", key="sale_isbn")
-    with sc2:
-        sale_qty = st.number_input("Количество", min_value=1, value=1, step=1, key="sale_qty")
+    # Съобщение от последния скан (callback-ът не може да рисува сам).
+    flash = st.session_state.pop("pos_flash", None)
+    if flash:
+        (st.success if flash[0] == "success" else st.error)(flash[1])
 
-    if st.button("Добави към продажбата"):
-        book = db.get_product_for_sale(sale_isbn.strip())
-        if book is None:
-            st.error(f"Няма книга с ISBN „{sale_isbn}“.")
-        elif book["stock"] < sale_qty:
-            st.error(f"Недостатъчна наличност (налични: {book['stock']}).")
-        else:
-            st.session_state.sale_cart.append({
-                "product_id": book["id"],
-                "title": book["title"],
-                "supplier_name": book["supplier_name"],
-                "quantity": sale_qty,
-                "cost_price": book["last_cost"],
-                "sale_price": book["cover_price"],
-            })
-            st.success(f"Добавена: {book['title']}")
+    # Едно поле — сканирай и натисни Enter (пистолетът го прави сам). Книгата
+    # се добавя/инкрементира автоматично, полето се изчиства. Без бутон „Добави".
+    st.text_input(SCAN_LABEL, key="pos_scan", on_change=pos_scan_add,
+                  placeholder="Сканирай баркод и продължавай — без мишка")
 
     # --- Кошница ---
     if st.session_state.sale_cart:
@@ -957,9 +1001,41 @@ elif section == "Нова продажба":
         m2.metric("Доставна сума", f"{total_cost:.2f} лв.")
         m3.metric("Печалба", f"{total_sale - total_cost:.2f} лв.")
 
-        cA, cB = st.columns(2)
+        # --- АВТОМАТИЧНО РЕСТО (само при плащане „В брой" и без ваучер) ---
+        # Огромен контрастен шрифт — за да няма математически грешки на касата.
+        if payment_method == PAY_CASH and not use_voucher:
+            st.divider()
+            rc1, rc2 = st.columns([1, 1])
+            with rc1:
+                received = st.number_input("Получена сума от клиента (лв.)",
+                                           min_value=0.0, step=1.0,
+                                           key="pos_received")
+            change = float(received) - float(total_sale)
+            with rc2:
+                if received <= 0:
+                    box = ("<div style='border:2px solid #1a1a1a;border-radius:12px;"
+                           "padding:14px 20px;background:#f2f2f2;text-align:center;'>"
+                           "<div style='font-size:14px;color:#555;letter-spacing:1px;'>"
+                           "РЕСТО</div><div style='font-size:40px;font-weight:800;"
+                           "color:#1a1a1a;'>—</div></div>")
+                elif change >= 0:
+                    box = ("<div style='border:2px solid #1a1a1a;border-radius:12px;"
+                           "padding:14px 20px;background:#ffffff;text-align:center;'>"
+                           "<div style='font-size:14px;color:#555;letter-spacing:1px;'>"
+                           "РЕСТО ЗА КЛИЕНТА</div><div style='font-size:46px;"
+                           f"font-weight:800;color:#1a1a1a;'>{change:.2f} лв.</div></div>")
+                else:
+                    box = ("<div style='border:2px solid #1a1a1a;border-radius:12px;"
+                           "padding:14px 20px;background:#e6e6e6;text-align:center;'>"
+                           "<div style='font-size:14px;color:#555;letter-spacing:1px;'>"
+                           "НЕ ДОСТИГАТ</div><div style='font-size:46px;font-weight:800;"
+                           f"color:#1a1a1a;'>{abs(change):.2f} лв.</div></div>")
+                st.markdown(box, unsafe_allow_html=True)
+
+        st.divider()
+        cA, cB = st.columns([2, 1])
         with cA:
-            if st.button("Завърши продажбата", type="primary"):
+            if st.button(LBL_FINALIZE, type="primary", use_container_width=True):
                 if use_voucher:
                     if not voucher_validated:
                         st.error("Първо провери ваучера с бутона „Провери код“.")
@@ -1013,13 +1089,64 @@ elif section == "Нова продажба":
                     st.session_state.sale_cart = []
                     st.session_state.checked_voucher = None
                     st.session_state.voucher_loss_acknowledged = False
+                    st.session_state.pos_reset_received = True   # нулирай рестото
                     st.rerun()
                 else:
                     st.error(msg)
         with cB:
-            if st.button("Изчисти"):
+            if st.button("Изчисти", use_container_width=True):
                 st.session_state.sale_cart = []
+                st.session_state.pos_reset_received = True
                 st.rerun()
+
+    # --- АВТО-ФОКУС + БЪРЗИ КЛАВИШИ (F2/F4/F8/Enter) ---
+    # Малко JS, инжектирано в РОДИТЕЛСКИЯ документ (за да преживее
+    # презареждането на iframe-а). Кликва съответните бутони по текст.
+    # Enter приключва САМО когато полето за скан е празно — иначе оставя
+    # сканирането да мине (пистолетът праща Enter след всеки баркод).
+    _pos_js = """
+    <script>
+    (function(){
+      var P = window.parent, D = P.document;
+      if(!P.__posKeysBound){
+        P.__posKeysBound = true;
+        var s = D.createElement('script');
+        s.textContent = "(" + function(){
+          var CFG = window.__POS_CFG;
+          function click(t){
+            var bs = document.querySelectorAll('button');
+            for(var i=0;i<bs.length;i++){
+              if(bs[i].innerText.trim() === t){ bs[i].click(); return; }
+            }
+          }
+          document.addEventListener('keydown', function(e){
+            var c = window.__POS_CFG; if(!c) return;
+            if(e.key==='F2'){ e.preventDefault(); click(c.cash); }
+            else if(e.key==='F4'){ e.preventDefault(); click(c.card); }
+            else if(e.key==='F8'){ e.preventDefault(); click(c.cod); }
+            else if(e.key==='Enter'){
+              var inp = document.querySelector('input[aria-label="'+c.scan+'"]');
+              if(!inp || inp.value.trim()===''){ e.preventDefault(); click(c.fin); }
+            }
+          }, true);
+        }.toString() + ")();";
+        D.body.appendChild(s);
+      }
+      // Конфигурацията (етикетите) — обновяваме я при всяко зареждане.
+      P.__POS_CFG = {scan:"__SCAN__", cash:"__CASH__", card:"__CARD__",
+                     cod:"__COD__", fin:"__FIN__"};
+      // Авто-фокус на полето за скан след всяко презареждане.
+      setTimeout(function(){
+        var inp = D.querySelector('input[aria-label="__SCAN__"]');
+        if(inp){ inp.focus(); }
+      }, 80);
+    })();
+    </script>
+    """
+    _pos_js = (_pos_js.replace("__SCAN__", SCAN_LABEL)
+               .replace("__CASH__", LBL_CASH).replace("__CARD__", LBL_CARD)
+               .replace("__COD__", LBL_COD).replace("__FIN__", LBL_FINALIZE))
+    components.html(_pos_js, height=0)
 
 
 # ----- ЕКРАН: AI МАРКЕТИНГ -----
