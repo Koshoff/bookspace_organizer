@@ -545,6 +545,9 @@ elif section == "Каталог":
                     st.text_input("Фискална група", value=auto_fiscal, disabled=True)
                     year = st.number_input("Година", min_value=0, value=2024, step=1)
                     cover_type = st.text_input("Корица (за книги)")
+                    crit_min = st.number_input(
+                        "Критичен минимум наличност", min_value=0, value=3, step=1,
+                        help="Под този праг ПОС-ът алармира при продажба.")
 
                 description = st.text_area("Описание")
 
@@ -558,7 +561,8 @@ elif section == "Каталог":
                         ok, msg = db.add_product(
                             isbn.strip(), title.strip(), author, supplier_id,
                             cover_price, auto_vat, year, cover_type, genre, description,
-                            product_type=type_db_value, fiscal_group=auto_fiscal
+                            product_type=type_db_value, fiscal_group=auto_fiscal,
+                            critical_minimum=crit_min
                         )
                         if ok:
                             st.success(msg)
@@ -623,6 +627,10 @@ elif section == "Каталог":
                     e_year = st.number_input("Година", min_value=0,
                                              value=int(cur["year"] or 0), step=1)
                     e_cover_type = st.text_input("Корица", value=cur["cover_type"] or "")
+                    e_crit_min = st.number_input(
+                        "Критичен минимум наличност", min_value=0,
+                        value=int(cur["critical_minimum"] if "critical_minimum" in cur.keys()
+                                  else 3), step=1)
                 e_description = st.text_area("Описание", value=cur["description"] or "")
 
                 save = st.form_submit_button("Запази промените", type="primary")
@@ -634,7 +642,8 @@ elif section == "Каталог":
                             cur["id"], e_isbn.strip(), e_title.strip(), e_author,
                             supplier_map[e_supplier_name], e_cover_price, e_vat,
                             e_year, e_cover_type, e_genre, e_description,
-                            product_type=e_type_db, fiscal_group=e_fiscal)
+                            product_type=e_type_db, fiscal_group=e_fiscal,
+                            critical_minimum=e_crit_min)
                         (st.success if ok else st.error)(msg)
                         if ok:
                             st.rerun()
@@ -864,6 +873,18 @@ elif section == "Нова продажба":
     if "pos_payment" not in st.session_state:
         st.session_state.pos_payment = PAY_COD   # както беше по подразбиране
 
+    # --- ЗАДЪРЖАНА СМЕТКА (Hold/Park): бутон за възстановяване най-горе ---
+    parked = st.session_state.get("parked_cart")
+    if parked:
+        parked_total = sum(i["quantity"] * i["sale_price"] for i in parked)
+        if st.button(f"🔄 Възстанови задържана сметка (Сума: {parked_total:.2f} лв.)",
+                     use_container_width=True):
+            # Връщаме задържаната количка (замества текущата — паркираш, за да
+            # обслужиш следващия клиент, после възстановяваш).
+            st.session_state.sale_cart = parked
+            st.session_state.parked_cart = None
+            st.rerun()
+
     # След приключена продажба нулираме „получената сума" ПРЕДИ да се създаде
     # полето (иначе Streamlit не позволява промяна след инстанцииране).
     if st.session_state.pop("pos_reset_received", False):
@@ -890,6 +911,8 @@ elif section == "Нова продажба":
                         f"(налични: {book['stock']}).")
                 else:
                     it["quantity"] += 1
+                    it["stock"] = book["stock"]                 # обновяваме наличността
+                    it["critical_minimum"] = book["critical_minimum"]
                     st.session_state.pos_flash = (
                         "success", f"+1 „{book['title']}“ → {it['quantity']} бр.")
                 return
@@ -901,6 +924,7 @@ elif section == "Нова продажба":
             "product_id": book["id"], "title": book["title"],
             "supplier_name": book["supplier_name"], "quantity": 1,
             "cost_price": book["last_cost"], "sale_price": book["cover_price"],
+            "stock": book["stock"], "critical_minimum": book["critical_minimum"],
         })
         st.session_state.pos_flash = ("success", f"Добавена „{book['title']}“")
 
@@ -974,8 +998,10 @@ elif section == "Нова продажба":
 
     # Съобщение от последния скан (callback-ът не може да рисува сам).
     flash = st.session_state.pop("pos_flash", None)
+    pos_beep_type = ""      # ще задейства звуковия сигнал долу
     if flash:
         (st.success if flash[0] == "success" else st.error)(flash[1])
+        pos_beep_type = flash[0]   # 'success' или 'error'
 
     # Едно поле — сканирай и натисни Enter (пистолетът го прави сам). Книгата
     # се добавя/инкрементира автоматично, полето се изчиства. Без бутон „Добави".
@@ -986,13 +1012,38 @@ elif section == "Нова продажба":
     if st.session_state.sale_cart:
         st.subheader("Стоки в продажбата")
         df = pd.DataFrame(st.session_state.sale_cart)
+        # Съвместимост, ако ред е добавен преди тези полета да съществуват.
+        if "stock" not in df:
+            df["stock"] = 0
+        if "critical_minimum" not in df:
+            df["critical_minimum"] = 3
         df["ред_продажна"] = df["quantity"] * df["sale_price"]
         df["ред_доставна"] = df["quantity"] * df["cost_price"]
+        # Наличност СЛЕД тази продажба и индикатор за критичен минимум.
+        df["остатък"] = df["stock"] - df["quantity"]
+        df["Статус"] = df.apply(
+            lambda r: "🚨 Критична наличност"
+            if r["остатък"] <= r["critical_minimum"] else "", axis=1)
+
+        show = df.rename(columns={
+            "title": "Заглавие", "supplier_name": "Доставчик",
+            "quantity": "Кол.", "sale_price": "Цена",
+            "ред_продажна": "Сума", "остатък": "Наличност след продажба",
+        })
         st.dataframe(
-            df[["title", "supplier_name", "quantity", "cost_price",
-                "sale_price", "ред_продажна"]],
-            width='stretch', hide_index=True
-        )
+            show[["Заглавие", "Доставчик", "Кол.", "Цена", "Сума",
+                  "Наличност след продажба", "Статус"]],
+            width='stretch', hide_index=True)
+
+        # Обособен високо-контрастен банер за критичните заглавия.
+        critical = df[df["Статус"] != ""]["title"].tolist()
+        if critical:
+            titles = ", ".join(critical)
+            st.markdown(
+                "<div style='border:2px solid #1a1a1a;border-radius:10px;"
+                "padding:10px 16px;background:#1a1a1a;color:#ffffff;"
+                "font-weight:700;'>🚨 Критична наличност: " + titles + "</div>",
+                unsafe_allow_html=True)
 
         total_sale = df["ред_продажна"].sum()
         total_cost = df["ред_доставна"].sum()
@@ -1033,7 +1084,14 @@ elif section == "Нова продажба":
                 st.markdown(box, unsafe_allow_html=True)
 
         st.divider()
-        cA, cB = st.columns([2, 1])
+        cA, cHold, cB = st.columns([2, 1, 1])
+        with cHold:
+            # Задържане на сметката за следващ клиент (Hold/Park).
+            if st.button("⏸️ Задръж сметката", use_container_width=True):
+                st.session_state.parked_cart = list(st.session_state.sale_cart)
+                st.session_state.sale_cart = []
+                st.session_state.pos_reset_received = True
+                st.rerun()
         with cA:
             if st.button(LBL_FINALIZE, type="primary", use_container_width=True):
                 if use_voucher:
@@ -1112,13 +1170,31 @@ elif section == "Нова продажба":
         P.__posKeysBound = true;
         var s = D.createElement('script');
         s.textContent = "(" + function(){
-          var CFG = window.__POS_CFG;
           function click(t){
             var bs = document.querySelectorAll('button');
             for(var i=0;i<bs.length;i++){
               if(bs[i].innerText.trim() === t){ bs[i].click(); return; }
             }
           }
+          // Звуков сигнал през Web Audio (без файлове). success = кратък висок,
+          // error = двоен нисък. Контекстът се резюмира при първо действие.
+          window.__posBeep = function(type){
+            try{
+              var AC = window.AudioContext || window.webkitAudioContext;
+              var ctx = window.__posAC || (window.__posAC = new AC());
+              if(ctx.state === 'suspended'){ ctx.resume(); }
+              function tone(freq, start, dur){
+                var o = ctx.createOscillator(), g = ctx.createGain();
+                o.type = 'square'; o.frequency.value = freq;
+                o.connect(g); g.connect(ctx.destination);
+                g.gain.setValueAtTime(0.08, ctx.currentTime + start);
+                o.start(ctx.currentTime + start);
+                o.stop(ctx.currentTime + start + dur);
+              }
+              if(type === 'success'){ tone(880, 0, 0.12); }
+              else { tone(220, 0, 0.15); tone(220, 0.2, 0.15); }
+            }catch(e){}
+          };
           document.addEventListener('keydown', function(e){
             var c = window.__POS_CFG; if(!c) return;
             if(e.key==='F2'){ e.preventDefault(); click(c.cash); }
@@ -1140,12 +1216,16 @@ elif section == "Нова продажба":
         var inp = D.querySelector('input[aria-label="__SCAN__"]');
         if(inp){ inp.focus(); }
       }, 80);
+      // Звуков сигнал за резултата от последния скан (ако има).
+      var beep = "__BEEP__";
+      if(beep){ setTimeout(function(){ if(P.__posBeep){ P.__posBeep(beep); } }, 30); }
     })();
     </script>
     """
     _pos_js = (_pos_js.replace("__SCAN__", SCAN_LABEL)
                .replace("__CASH__", LBL_CASH).replace("__CARD__", LBL_CARD)
-               .replace("__COD__", LBL_COD).replace("__FIN__", LBL_FINALIZE))
+               .replace("__COD__", LBL_COD).replace("__FIN__", LBL_FINALIZE)
+               .replace("__BEEP__", pos_beep_type))
     components.html(_pos_js, height=0)
 
 

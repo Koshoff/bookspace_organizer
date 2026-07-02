@@ -33,20 +33,23 @@ def get_all_products():
 
 def add_product(isbn, title, author, supplier_id, cover_price, vat_rate,
                 year, cover_type, genre, description,
-                product_type="Книга", fiscal_group="Б"):
+                product_type="Книга", fiscal_group="Б", critical_minimum=3):
     """Добавя нов артикул (книга или ваучер).
     product_type: 'Книга' или 'Ваучер'.
     fiscal_group: 'Б' (9% ДДС) или 'Д' (0% ДДС, ваучери).
+    critical_minimum: праг на наличност, под който ПОС-ът алармира.
     """
     conn = get_connection()
     try:
         conn.execute(
             """INSERT INTO products
                (isbn, title, author, supplier_id, cover_price, vat_rate,
-                year, cover_type, genre, description, product_type, fiscal_group)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                year, cover_type, genre, description, product_type, fiscal_group,
+                critical_minimum)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (isbn, title, author, supplier_id, cover_price, vat_rate,
-             year, cover_type, genre, description, product_type, fiscal_group)
+             year, cover_type, genre, description, product_type, fiscal_group,
+             critical_minimum)
         )
         conn.commit()
         return True, f"{product_type}-ът е добавен успешно."
@@ -68,7 +71,7 @@ def get_all_products_full():
 
 def update_product(product_id, isbn, title, author, supplier_id, cover_price,
                    vat_rate, year, cover_type, genre, description,
-                   product_type="Книга", fiscal_group="Б"):
+                   product_type="Книга", fiscal_group="Б", critical_minimum=3):
     """Обновява съществуващ артикул. Връща (True, съобщение) или (False, грешка).
     Хваща нарушение на UNIQUE(isbn) — друг артикул вече носи това ISBN."""
     conn = get_connection()
@@ -77,11 +80,12 @@ def update_product(product_id, isbn, title, author, supplier_id, cover_price,
             """UPDATE products
                SET isbn = ?, title = ?, author = ?, supplier_id = ?,
                    cover_price = ?, vat_rate = ?, year = ?, cover_type = ?,
-                   genre = ?, description = ?, product_type = ?, fiscal_group = ?
+                   genre = ?, description = ?, product_type = ?, fiscal_group = ?,
+                   critical_minimum = ?
                WHERE id = ?""",
             (isbn, title, author, supplier_id, cover_price, vat_rate, year,
              cover_type, genre, description, product_type, fiscal_group,
-             product_id)
+             critical_minimum, product_id)
         )
         conn.commit()
         return True, "Артикулът е обновен успешно."

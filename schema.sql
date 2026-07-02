@@ -43,6 +43,8 @@ CREATE TABLE IF NOT EXISTS products (
     product_type    TEXT    NOT NULL DEFAULT 'Книга',
     -- Фискална група за касов апарат: 'Б' (9% ДДС, книги), 'Д' (0%, ваучери).
     fiscal_group    TEXT    NOT NULL DEFAULT 'Б',
+    -- Критичен минимум наличност — под него ПОС-ът алармира при продажба.
+    critical_minimum INTEGER NOT NULL DEFAULT 3,
     created_at      TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
     FOREIGN KEY (supplier_id) REFERENCES suppliers(id)
 );
