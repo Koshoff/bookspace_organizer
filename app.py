@@ -5,6 +5,7 @@ import pandas as pd
 import styles
 import db   # нашият слой за достъп до базата
 import mailer   # сервизен слой за автоматичните заявки по имейл
+import importer   # разчитане на файл с продажби от онлайн магазина
 
 # Конфигурация на страницата — широк изглед, заглавие на таба в браузъра.
 st.set_page_config(page_title="Bookspace ERP", layout="wide")
@@ -872,18 +873,34 @@ elif section == "Нова продажба":
         st.session_state.sale_cart = []
     if "pos_payment" not in st.session_state:
         st.session_state.pos_payment = PAY_COD   # както беше по подразбиране
+    if "parked_carts" not in st.session_state:
+        st.session_state.parked_carts = []       # списък от задържани сметки
 
-    # --- ЗАДЪРЖАНА СМЕТКА (Hold/Park): бутон за възстановяване най-горе ---
-    parked = st.session_state.get("parked_cart")
-    if parked:
-        parked_total = sum(i["quantity"] * i["sale_price"] for i in parked)
-        if st.button(f"🔄 Възстанови задържана сметка (Сума: {parked_total:.2f} лв.)",
-                     use_container_width=True):
-            # Връщаме задържаната количка (замества текущата — паркираш, за да
-            # обслужиш следващия клиент, после възстановяваш).
-            st.session_state.sale_cart = parked
-            st.session_state.parked_cart = None
-            st.rerun()
+    # --- ЗАДЪРЖАНИ СМЕТКИ (Hold/Park): по един бутон за всяка ---
+    parked_list = st.session_state.parked_carts
+    if parked_list:
+        st.caption("Задържани сметки")
+        for idx, p in enumerate(parked_list):
+            rc, dc = st.columns([5, 1])
+            if rc.button(
+                    f"🔄 Възстанови сметка #{idx + 1} — {p['total']:.2f} лв. "
+                    f"({p['n']} бр.)", key=f"restore_{idx}",
+                    use_container_width=True):
+                # За да не се губи текущата количка, ако има стока — задържаме я.
+                if st.session_state.sale_cart:
+                    cur_total = sum(i["quantity"] * i["sale_price"]
+                                    for i in st.session_state.sale_cart)
+                    parked_list.append({"items": list(st.session_state.sale_cart),
+                                        "total": cur_total,
+                                        "n": len(st.session_state.sale_cart)})
+                st.session_state.sale_cart = p["items"]
+                parked_list.pop(idx)   # махаме възстановената (по-ранен индекс)
+                st.rerun()
+            if dc.button("🗑️", key=f"discard_parked_{idx}",
+                         use_container_width=True, help="Изтрий задържаната сметка"):
+                parked_list.pop(idx)
+                st.rerun()
+        st.divider()
 
     # След приключена продажба нулираме „получената сума" ПРЕДИ да се създаде
     # полето (иначе Streamlit не позволява промяна след инстанцииране).
@@ -1086,9 +1103,16 @@ elif section == "Нова продажба":
         st.divider()
         cA, cHold, cB = st.columns([2, 1, 1])
         with cHold:
-            # Задържане на сметката за следващ клиент (Hold/Park).
+            # Задържане на сметката за следващ клиент (Hold/Park). Трупаме в
+            # списък, за да може да има ПОВЕЧЕ ОТ ЕДНА задържана сметка.
             if st.button("⏸️ Задръж сметката", use_container_width=True):
-                st.session_state.parked_cart = list(st.session_state.sale_cart)
+                held_total = sum(i["quantity"] * i["sale_price"]
+                                 for i in st.session_state.sale_cart)
+                st.session_state.parked_carts.append({
+                    "items": list(st.session_state.sale_cart),
+                    "total": held_total,
+                    "n": len(st.session_state.sale_cart),
+                })
                 st.session_state.sale_cart = []
                 st.session_state.pos_reset_received = True
                 st.rerun()
@@ -1211,10 +1235,16 @@ elif section == "Нова продажба":
       // Конфигурацията (етикетите) — обновяваме я при всяко зареждане.
       P.__POS_CFG = {scan:"__SCAN__", cash:"__CASH__", card:"__CARD__",
                      cod:"__COD__", fin:"__FIN__"};
-      // Авто-фокус на полето за скан след всяко презареждане.
+      // Авто-фокус на полето за скан — САМО ако служителят не пише в друго
+      // поле (иначе бихме „откраднали" фокуса и объркали кликовете).
       setTimeout(function(){
         var inp = D.querySelector('input[aria-label="__SCAN__"]');
-        if(inp){ inp.focus(); }
+        if(!inp){ return; }
+        var ae = D.activeElement;
+        var busy = ae && ae !== D.body &&
+                   (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' ||
+                    ae.tagName === 'SELECT');
+        if(!busy){ inp.focus(); }
       }, 80);
       // Звуков сигнал за резултата от последния скан (ако има).
       var beep = "__BEEP__";
