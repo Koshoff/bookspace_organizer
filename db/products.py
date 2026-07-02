@@ -146,6 +146,27 @@ def get_catalog_for_matching():
     return [dict(r) for r in rows]
 
 
+def get_product_for_delivery(isbn):
+    """
+    Връща данните на книга по ISBN за екрана „Нова доставка": корична цена,
+    ИСТОРИЧЕСКИ last_delivery_price / last_discount_pct (може да са NULL, ако
+    още няма доставка) и стандартната отстъпка на доставчика (за първоначално
+    попълване, когато няма история). Връща dict или None.
+    """
+    conn = get_connection()
+    row = conn.execute(
+        """SELECT p.id, p.isbn, p.title, p.cover_price,
+                  p.last_delivery_price, p.last_discount_pct,
+                  s.default_discount AS default_discount
+           FROM products p
+           JOIN suppliers s ON s.id = p.supplier_id
+           WHERE p.isbn = ?""",
+        (isbn.strip(),)
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
 def get_products_for_delivery():
     """Връща книгите във вид, удобен за избор при доставка:
     {ISBN: {id, title, author, supplier_id}}. Ползва се за сканиране по ISBN."""

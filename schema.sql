@@ -45,6 +45,10 @@ CREATE TABLE IF NOT EXISTS products (
     fiscal_group    TEXT    NOT NULL DEFAULT 'Б',
     -- Критичен минимум наличност — под него ПОС-ът алармира при продажба.
     critical_minimum INTEGER NOT NULL DEFAULT 3,
+    -- Историческа последна доставна цена и отстъпка. Обновяват се САМО при
+    -- финален запис на доставка (контрол, не тихо презаписване). NULL = няма история.
+    last_delivery_price REAL,
+    last_discount_pct   REAL,
     created_at      TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
     FOREIGN KEY (supplier_id) REFERENCES suppliers(id)
 );

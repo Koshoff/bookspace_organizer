@@ -679,14 +679,33 @@ elif section == "Доставки":
     # ============ ТАБ 1: НОВА ДОСТАВКА ============
     with tab_new:
         suppliers = db.get_all_suppliers()
-        products_by_isbn = db.get_products_for_delivery()
+        has_products = bool(db.get_products_for_delivery())
 
-        if not suppliers or not products_by_isbn:
+        if not suppliers or not has_products:
             st.warning("Нужни са поне един доставчик и една книга в каталога.")
         else:
-            # --- Кошницата живее в session_state, за да преживее презарежданията ---
-            if "delivery_cart" not in st.session_state:
-                st.session_state.delivery_cart = []
+            # Редовете живеят в session_state; числата — в session_state ключове
+            # по СТАБИЛЕН rid (не по позиция), за да не се разместват при триене.
+            if "delivery_rows" not in st.session_state:
+                st.session_state.delivery_rows = []
+            if "delivery_rid_counter" not in st.session_state:
+                st.session_state.delivery_rid_counter = 0
+
+            # --- Почистване на „осиротели" ключове ПРЕДИ да се създадат уиджетите
+            # (така не модифицираме състояние след инстанцииране на уиджет). ---
+            _active = {r["rid"] for r in st.session_state.delivery_rows}
+            for _k in list(st.session_state.keys()):
+                for _pref in ("del_qty_", "del_cover_", "del_disc_",
+                              "del_unit_", "del_type_"):
+                    if _k.startswith(_pref):
+                        try:
+                            _rid = int(_k[len(_pref):])
+                        except ValueError:
+                            continue
+                        if _rid not in _active:
+                            st.session_state.pop(_k, None)
+            if not _active:
+                st.session_state.pop("del_paper_total", None)
 
             # --- Данни за документа (капака) ---
             supplier_map = {s["name"]: s["id"] for s in suppliers}
@@ -703,69 +722,194 @@ elif section == "Доставки":
                     "Консигнация (отложено)", "По банка", "В брой",
                 ])
 
-            st.divider()
-            st.subheader("Добавяне на книга чрез ISBN")
+            # --- Callback: смарт калкулатор (преизчислява свързаните полета) ---
+            def delivery_recompute(rid, field):
+                cover = st.session_state.get(f"del_cover_{rid}") or 0.0
+                disc = st.session_state.get(f"del_disc_{rid}") or 0.0
+                unit = st.session_state.get(f"del_unit_{rid}") or 0.0
+                if field in ("disc", "cover"):
+                    # Доставна = корична × (1 − отстъпка%)
+                    st.session_state[f"del_unit_{rid}"] = round(
+                        cover * (1 - disc / 100), 2)
+                elif field == "unit" and cover > 0:
+                    # Отстъпка = (1 − доставна/корична) × 100
+                    st.session_state[f"del_disc_{rid}"] = round(
+                        (1 - unit / cover) * 100, 2)
+                # Ако новата цена се разминава с историческата → предупредителен звук.
+                row = next((r for r in st.session_state.delivery_rows
+                            if r["rid"] == rid), None)
+                new_unit = st.session_state.get(f"del_unit_{rid}") or 0.0
+                if row and row["last_delivery_price"] is not None and \
+                        abs(new_unit - row["last_delivery_price"]) > 0.005:
+                    st.session_state.delivery_beep = "warn"
 
-            # --- Добавяне на ред в кошницата ---
-            c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
-            with c1:
-                isbn_input = st.text_input("Сканирай/въведи ISBN")
-            with c2:
-                qty = st.number_input("Количество", min_value=1, value=1, step=1)
-            with c3:
-                settlement = st.selectbox("Тип", ["Купена", "Консигнация"])
-            with c4:
-                percent = st.number_input("% доставчик", min_value=0.0, value=35.0, step=0.5)
-
-            del_price = st.number_input("Доставна цена (за бройка)",
-                                        min_value=0.0, value=0.0, step=0.5)
-
-            if st.button("Добави към доставката"):
-                if isbn_input.strip() in products_by_isbn:
-                    book = products_by_isbn[isbn_input.strip()]
-                    st.session_state.delivery_cart.append({
-                        "product_id": book["id"],
-                        "title": book["title"],
-                        "quantity": qty,
-                        "settlement_type": settlement,
-                        "supplier_percent": percent,
-                        "delivery_price": del_price,
-                    })
-                    st.success(f"Добавена: {book['title']}")
+            # --- Callback: сканиране добавя ред с ИСТОРИЧЕСКИТЕ стойности ---
+            def delivery_scan_add():
+                code = (st.session_state.get("del_scan") or "").strip()
+                st.session_state.del_scan = ""
+                if not code:
+                    return
+                book = db.get_product_for_delivery(code)
+                if book is None:
+                    st.session_state.delivery_flash = (
+                        "error", f"Няма книга с ISBN „{code}“ в каталога.")
+                    st.session_state.delivery_beep = "warn"
+                    return
+                rid = st.session_state.delivery_rid_counter
+                st.session_state.delivery_rid_counter += 1
+                cover = float(book["cover_price"] or 0.0)
+                last_price = book["last_delivery_price"]
+                last_disc = book["last_discount_pct"]
+                if last_price is not None:
+                    unit = float(last_price)
+                    disc = float(last_disc) if last_disc is not None else (
+                        round((1 - unit / cover) * 100, 2) if cover > 0 else 0.0)
                 else:
-                    st.error(f"Няма книга с ISBN „{isbn_input}“ в каталога.")
- 
-            # --- Показваме текущата кошница ---
-            if st.session_state.delivery_cart:
+                    disc = float(book["default_discount"] or 0.0)
+                    unit = round(cover * (1 - disc / 100), 2)
+                # Пре-зареждаме стойностите на бъдещите уиджети (по ключ).
+                st.session_state[f"del_qty_{rid}"] = 1
+                st.session_state[f"del_cover_{rid}"] = cover
+                st.session_state[f"del_disc_{rid}"] = disc
+                st.session_state[f"del_unit_{rid}"] = unit
+                st.session_state[f"del_type_{rid}"] = "Купена"
+                st.session_state.delivery_rows.append({
+                    "rid": rid, "product_id": book["id"], "isbn": book["isbn"],
+                    "title": book["title"], "last_delivery_price": last_price,
+                    "last_discount_pct": last_disc,
+                })
+                st.session_state.delivery_flash = (
+                    "success", f"Добавена „{book['title']}“")
+
+            st.divider()
+            st.subheader("⚡ Сканиране на книга")
+            dflash = st.session_state.pop("delivery_flash", None)
+            if dflash:
+                (st.success if dflash[0] == "success" else st.error)(dflash[1])
+            st.text_input("Сканирай баркод (ISBN)", key="del_scan",
+                          on_change=delivery_scan_add,
+                          placeholder="Сканирай — редът се добавя с историческите цени")
+
+            # --- Интерактивна таблица (edit-in-place) ---
+            if st.session_state.delivery_rows:
                 st.subheader("Книги в доставката")
-                cart_df = pd.DataFrame(st.session_state.delivery_cart)
-                cart_df["ред_сума"] = cart_df["quantity"] * cart_df["delivery_price"]
-                st.dataframe(cart_df[["title", "quantity", "settlement_type",
-                                      "supplier_percent", "delivery_price", "ред_сума"]],
-                             width='stretch', hide_index=True)
+                head = st.columns([3, 1, 1.3, 1.3, 1.5, 1.3, 0.6])
+                for hcol, htxt in zip(head, ["Заглавие", "Кол.", "Корична",
+                                             "Отстъпка %", "Доставна/бр.",
+                                             "Тип", ""]):
+                    hcol.caption(htxt)
 
-                total = cart_df["ред_сума"].sum()
-                st.metric("Обща доставна сума", f"{total:.2f} лв.")
+                for row in st.session_state.delivery_rows:
+                    rid = row["rid"]
+                    cc = st.columns([3, 1, 1.3, 1.3, 1.5, 1.3, 0.6])
+                    cc[0].markdown(f"**{row['title']}**  \n`{row['isbn']}`")
+                    cc[1].number_input("Кол.", min_value=1, step=1,
+                                       key=f"del_qty_{rid}",
+                                       label_visibility="collapsed")
+                    cc[2].number_input("Корична", min_value=0.0, step=0.5,
+                                       key=f"del_cover_{rid}",
+                                       label_visibility="collapsed",
+                                       on_change=delivery_recompute,
+                                       args=(rid, "cover"))
+                    cc[3].number_input("Отстъпка %", min_value=0.0, max_value=100.0,
+                                       step=0.5, key=f"del_disc_{rid}",
+                                       label_visibility="collapsed",
+                                       on_change=delivery_recompute,
+                                       args=(rid, "disc"))
+                    cc[4].number_input("Доставна/бр.", min_value=0.0, step=0.5,
+                                       key=f"del_unit_{rid}",
+                                       label_visibility="collapsed",
+                                       on_change=delivery_recompute,
+                                       args=(rid, "unit"))
+                    cc[5].selectbox("Тип", ["Купена", "Консигнация"],
+                                    key=f"del_type_{rid}",
+                                    label_visibility="collapsed")
+                    if cc[6].button("🗑️", key=f"del_rm_{rid}"):
+                        st.session_state.delivery_rows = [
+                            r for r in st.session_state.delivery_rows
+                            if r["rid"] != rid]
+                        st.rerun()
 
-                colA, colB = st.columns(2)
-                with colA:
-                    if st.button("Запиши доставката", type="primary"):
+                    # Ярък сигнал за разлика с историческата цена.
+                    last = row["last_delivery_price"]
+                    unit_now = st.session_state.get(f"del_unit_{rid}") or 0.0
+                    if last is not None and abs(unit_now - last) > 0.005:
+                        st.markdown(
+                            "<div style='border:2px solid #1a1a1a;background:#1a1a1a;"
+                            "color:#ffffff;border-radius:8px;padding:8px 14px;"
+                            "font-weight:700;margin:2px 0 10px 0;'>"
+                            "⚠️ ВНИМАНИЕ: Разлика в доставната цена! "
+                            f"(Последна историческа: {last:.2f} лв. | "
+                            f"Нова въведена: {unit_now:.2f} лв.)</div>",
+                            unsafe_allow_html=True)
+
+                # --- ЖИВ ОДИТ / INVOICE MATCHER ---
+                st.divider()
+                entered = sum(
+                    (st.session_state.get(f"del_qty_{r['rid']}") or 0) *
+                    (st.session_state.get(f"del_unit_{r['rid']}") or 0)
+                    for r in st.session_state.delivery_rows)
+                paper_total = st.number_input(
+                    "Обща сума по хартиен документ (без ДДС)",
+                    min_value=0.0, step=0.5, key="del_paper_total")
+                diff = round(float(paper_total) - float(entered), 2)
+                matched = abs(diff) < 0.005 and paper_total > 0
+
+                bg = "#ffffff" if matched else "#e6e6e6"
+                status = "✅ Фактурата е засечена на 100%" if matched else \
+                    ("Има несъответствие — коригирай, за да отключиш записа")
+                st.markdown(
+                    "<div style='border:2px solid #1a1a1a;border-radius:12px;"
+                    f"padding:16px 22px;background:{bg};'>"
+                    "<div style='display:flex;justify-content:space-between;"
+                    "font-size:16px;'><span>Въведено до момента:</span>"
+                    f"<span style='font-weight:800;'>{entered:.2f} лв.</span></div>"
+                    "<div style='display:flex;justify-content:space-between;"
+                    "font-size:26px;font-weight:800;margin-top:8px;'>"
+                    f"<span>Разлика:</span><span>{diff:.2f} лв.</span></div>"
+                    "<div style='margin-top:8px;font-size:14px;color:#333;'>"
+                    f"{status}</div></div>", unsafe_allow_html=True)
+
+                st.divider()
+                cS, cC = st.columns([2, 1])
+                with cS:
+                    # Бутонът е ЗАКЛЮЧЕН, докато несъответствието не е 0.00.
+                    if st.button("ЗАПИШИ ДОСТАВКАТА НА СКЛАД", type="primary",
+                                 use_container_width=True, disabled=not matched):
+                        items = []
+                        for r in st.session_state.delivery_rows:
+                            rid = r["rid"]
+                            items.append({
+                                "product_id": r["product_id"],
+                                "quantity": int(st.session_state.get(f"del_qty_{rid}") or 1),
+                                "settlement_type": st.session_state.get(f"del_type_{rid}") or "Купена",
+                                "supplier_percent": float(st.session_state.get(f"del_disc_{rid}") or 0),
+                                "delivery_price": float(st.session_state.get(f"del_unit_{rid}") or 0),
+                            })
                         ok, msg = db.create_delivery(
                             supplier_map[supplier_name], doc_type, doc_number,
-                            str(doc_date), st.session_state.delivery_cart, payment_type
-                        )
+                            str(doc_date), items, payment_type)
                         if ok:
+                            # Изчистваме — осиротелите ключове се чистят горе при rerun.
+                            st.session_state.delivery_rows = []
                             st.success(msg)
-                            st.session_state.delivery_cart = []
                             st.rerun()
                         else:
                             st.error(msg)
-
-                            
-                with colB:
-                    if st.button("Изчисти кошницата"):
-                        st.session_state.delivery_cart = []
+                with cC:
+                    if st.button("Изчисти", use_container_width=True):
+                        st.session_state.delivery_rows = []
                         st.rerun()
+
+            # Предупредителен звук (Web Audio) при грешка/ценова разлика.
+            if st.session_state.pop("delivery_beep", None):
+                components.html(
+                    "<script>try{var A=window.AudioContext||window.webkitAudioContext;"
+                    "var c=new A();function t(f,s,d){var o=c.createOscillator(),"
+                    "g=c.createGain();o.type='square';o.frequency.value=f;o.connect(g);"
+                    "g.connect(c.destination);g.gain.setValueAtTime(0.08,c.currentTime+s);"
+                    "o.start(c.currentTime+s);o.stop(c.currentTime+s+d);}"
+                    "t(220,0,0.15);t(220,0.2,0.15);}catch(e){}</script>", height=0)
 
     # ============ ТАБ 2: ЖУРНАЛ НА ДОСТАВКИТЕ ============
     with tab_journal:

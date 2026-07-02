@@ -13,6 +13,10 @@ def create_delivery(supplier_id, doc_type, doc_number, doc_date, items, payment_
 
     Принцип: или всичко минава, или нищо. Затова няма commit по средата —
     само един commit накрая, и rollback при всяка грешка.
+
+    ВАЖНО (контрол вместо тихо презаписване): историческите last_delivery_price
+    и last_discount_pct се обновяват ЕДВА ТУК — при финалния запис на доставката,
+    не при въвеждане/сканиране. Така картонът пази цената до потвърждение.
     """
     conn = get_connection()
     try:
@@ -49,6 +53,16 @@ def create_delivery(supplier_id, doc_type, doc_number, doc_date, items, payment_
                    VALUES (?, 'Доставка', ?, ?, ?)""",
                 (item["product_id"], item["quantity"],
                  f"{doc_type} №{doc_number}", operator)
+            )
+
+            # 2в. Обновяваме историческата доставна цена/отстъпка на картона —
+            # само сега, при потвърден запис. Това е „контрольорът".
+            cur.execute(
+                """UPDATE products
+                   SET last_delivery_price = ?, last_discount_pct = ?
+                   WHERE id = ?""",
+                (item["delivery_price"], item.get("supplier_percent"),
+                 item["product_id"])
             )
 
         # --- 3. ЕДИН commit за всичко наведнъж ---
