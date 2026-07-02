@@ -6,6 +6,9 @@ import styles
 import db   # нашият слой за достъп до базата
 import mailer   # сервизен слой за автоматичните заявки по имейл
 import importer   # разчитане на файл с продажби от онлайн магазина
+import storage   # локален архив за прикачените фактури
+import os
+import base64
 
 # Конфигурация на страницата — широк изглед, заглавие на таба в браузъра.
 st.set_page_config(page_title="Bookspace ERP", layout="wide")
@@ -690,6 +693,8 @@ elif section == "Доставки":
                 st.session_state.delivery_rows = []
             if "delivery_rid_counter" not in st.session_state:
                 st.session_state.delivery_rid_counter = 0
+            if "del_upload_nonce" not in st.session_state:
+                st.session_state.del_upload_nonce = 0   # за изчистване на uploader-а
 
             # --- Почистване на „осиротели" ключове ПРЕДИ да се създадат уиджетите
             # (така не модифицираме състояние след инстанцииране на уиджет). ---
@@ -721,6 +726,12 @@ elif section == "Доставки":
                 payment_type = st.selectbox("Начин на плащане", [
                     "Консигнация (отложено)", "По банка", "В брой",
                 ])
+
+            # --- Прикачване на снимка/PDF на хартиената фактура ---
+            invoice_file = st.file_uploader(
+                "📸 Прикачи снимка или PDF на хартиената фактура",
+                type=["png", "jpg", "jpeg", "pdf"],
+                key=f"del_invoice_{st.session_state.del_upload_nonce}")
 
             # --- Callback: смарт калкулатор (преизчислява свързаните полета) ---
             def delivery_recompute(rid, field):
@@ -886,15 +897,32 @@ elif section == "Доставки":
                                 "supplier_percent": float(st.session_state.get(f"del_disc_{rid}") or 0),
                                 "delivery_price": float(st.session_state.get(f"del_unit_{rid}") or 0),
                             })
+                        # Записваме прикачената фактура на диска ПРЕДИ доставката,
+                        # за да сложим пътя в базата. При провал — трием файла.
+                        saved_path = None
+                        if invoice_file is not None:
+                            try:
+                                saved_path = storage.save_invoice_file(
+                                    invoice_file, doc_number)
+                            except Exception as e:
+                                st.error(f"Грешка при записа на файла: {e}")
+                                st.stop()
                         ok, msg = db.create_delivery(
                             supplier_map[supplier_name], doc_type, doc_number,
-                            str(doc_date), items, payment_type)
+                            str(doc_date), items, payment_type,
+                            invoice_file_path=saved_path)
                         if ok:
                             # Изчистваме — осиротелите ключове се чистят горе при rerun.
                             st.session_state.delivery_rows = []
-                            st.success(msg)
+                            st.session_state.del_upload_nonce += 1   # нулира uploader-а
+                            if saved_path:
+                                st.success(f"{msg}  📎 Фактурата е архивирана.")
+                            else:
+                                st.success(msg)
                             st.rerun()
                         else:
+                            if saved_path and os.path.exists(saved_path):
+                                os.remove(saved_path)   # без осиротял файл
                             st.error(msg)
                 with cC:
                     if st.button("Изчисти", use_container_width=True):
@@ -974,6 +1002,11 @@ elif section == "Доставки":
             st.info("Няма доставки по тези критерии.")
         else:
             df = pd.DataFrame([dict(d) for d in deliveries])
+            # Скриваме суровия път; показваме само индикатор „📎" за прикачен документ.
+            if "invoice_file_path" in df:
+                df["Документ"] = df["invoice_file_path"].apply(
+                    lambda p: "📎" if p else "")
+                df = df.drop(columns=["invoice_file_path"])
             st.dataframe(df, width='stretch', hide_index=True)
 
             st.divider()
@@ -983,10 +1016,11 @@ elif section == "Доставки":
                 f"№{d['doc_number']} — {d['supplier_name']} ({d['payment_status']})": d["id"]
                 for d in deliveries
             }
+            invoice_paths = {d["id"]: d["invoice_file_path"] for d in deliveries}
             chosen = st.selectbox("Избери доставка", list(delivery_labels.keys()))
             chosen_id = delivery_labels[chosen]
 
-            colA, colB = st.columns(2)
+            colA, colB, colC = st.columns(3)
             with colA:
                 if st.button("Маркирай като платена"):
                     db.mark_delivery_paid(chosen_id)
@@ -994,11 +1028,39 @@ elif section == "Доставки":
                     st.rerun()
             with colB:
                 show_details = st.checkbox("Покажи книгите в доставката")
+            with colC:
+                if st.button("👁️ Преглед на оригиналния документ"):
+                    st.session_state.show_invoice_for = chosen_id
 
             if show_details:
                 items = db.get_delivery_items(chosen_id)
                 items_df = pd.DataFrame([dict(i) for i in items])
                 st.dataframe(items_df, width='stretch', hide_index=True)
+
+            # --- Преглед на прикачената фактура (снимка/PDF) ---
+            if st.session_state.get("show_invoice_for") == chosen_id:
+                inv_path = invoice_paths.get(chosen_id)
+                if not inv_path:
+                    st.info("Няма прикачен документ към тази доставка.")
+                elif not os.path.exists(inv_path):
+                    st.warning(f"Файлът липсва на диска: {inv_path}")
+                else:
+                    ext = os.path.splitext(inv_path)[1].lower()
+                    with st.container(border=True):
+                        st.caption(f"Оригинален документ · {os.path.basename(inv_path)}")
+                        if ext in (".png", ".jpg", ".jpeg"):
+                            st.image(inv_path, use_container_width=True)
+                        elif ext == ".pdf":
+                            data = open(inv_path, "rb").read()
+                            b64 = base64.b64encode(data).decode()
+                            st.markdown(
+                                f"<iframe src='data:application/pdf;base64,{b64}' "
+                                "width='100%' height='600' style='border:none;"
+                                "border-radius:10px;'></iframe>",
+                                unsafe_allow_html=True)
+                            st.download_button("⬇️ Свали PDF", data=data,
+                                               file_name=os.path.basename(inv_path),
+                                               mime="application/pdf")
 
 # ----- ЕКРАН: НОВА ПРОДАЖБА / ПОС (Модул 4) -----
 elif section == "Нова продажба":
