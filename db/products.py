@@ -33,20 +33,23 @@ def get_all_products():
 
 def add_product(isbn, title, author, supplier_id, cover_price, vat_rate,
                 year, cover_type, genre, description,
-                product_type="Книга", fiscal_group="Б"):
+                product_type="Книга", fiscal_group="Б", critical_minimum=3):
     """Добавя нов артикул (книга или ваучер).
     product_type: 'Книга' или 'Ваучер'.
     fiscal_group: 'Б' (9% ДДС) или 'Д' (0% ДДС, ваучери).
+    critical_minimum: праг на наличност, под който ПОС-ът алармира.
     """
     conn = get_connection()
     try:
         conn.execute(
             """INSERT INTO products
                (isbn, title, author, supplier_id, cover_price, vat_rate,
-                year, cover_type, genre, description, product_type, fiscal_group)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                year, cover_type, genre, description, product_type, fiscal_group,
+                critical_minimum)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (isbn, title, author, supplier_id, cover_price, vat_rate,
-             year, cover_type, genre, description, product_type, fiscal_group)
+             year, cover_type, genre, description, product_type, fiscal_group,
+             critical_minimum)
         )
         conn.commit()
         return True, f"{product_type}-ът е добавен успешно."
@@ -68,7 +71,7 @@ def get_all_products_full():
 
 def update_product(product_id, isbn, title, author, supplier_id, cover_price,
                    vat_rate, year, cover_type, genre, description,
-                   product_type="Книга", fiscal_group="Б"):
+                   product_type="Книга", fiscal_group="Б", critical_minimum=3):
     """Обновява съществуващ артикул. Връща (True, съобщение) или (False, грешка).
     Хваща нарушение на UNIQUE(isbn) — друг артикул вече носи това ISBN."""
     conn = get_connection()
@@ -77,11 +80,12 @@ def update_product(product_id, isbn, title, author, supplier_id, cover_price,
             """UPDATE products
                SET isbn = ?, title = ?, author = ?, supplier_id = ?,
                    cover_price = ?, vat_rate = ?, year = ?, cover_type = ?,
-                   genre = ?, description = ?, product_type = ?, fiscal_group = ?
+                   genre = ?, description = ?, product_type = ?, fiscal_group = ?,
+                   critical_minimum = ?
                WHERE id = ?""",
             (isbn, title, author, supplier_id, cover_price, vat_rate, year,
              cover_type, genre, description, product_type, fiscal_group,
-             product_id)
+             critical_minimum, product_id)
         )
         conn.commit()
         return True, "Артикулът е обновен успешно."
@@ -117,34 +121,29 @@ def delete_product(product_id):
         conn.close()
 
 
-def get_products_by_isbns(isbns):
+def get_catalog_for_matching():
     """
-    Връща {isbn: {...}} за подадените ISBN-и — с доставчик, неговия имейл,
-    корична и ПОСЛЕДНА доставна цена. Една заявка вместо N, за импорта на
-    файл с продажби от онлайн магазина.
+    Връща ЦЕЛИЯ каталог от книги наведнъж — с доставчик, имейл, стандартна
+    отстъпка, корична и последна доставна цена. Зарежда се ВЕДНЪЖ при импорт,
+    за да става засичането (по ISBN и по заглавие) в паметта, без отделна
+    заявка на ред (избягва N+1).
     """
-    if not isbns:
-        return {}
     conn = get_connection()
-    # Динамичен брой плейсхолдъри ?,?,? — БРОЯТ е от кода, СТОЙНОСТИТЕ са
-    # параметризирани (не се лепят в SQL), значи няма SQL injection.
-    placeholders = ",".join("?" * len(isbns))
     rows = conn.execute(
-        f"""SELECT p.id, p.isbn, p.title, p.author, p.cover_price,
-                   sup.id    AS supplier_id,
-                   sup.name  AS supplier_name,
-                   sup.email AS supplier_email,
-                   sup.default_discount AS default_discount,
-                   COALESCE((SELECT di.delivery_price FROM delivery_items di
-                             WHERE di.product_id = p.id
-                             ORDER BY di.id DESC LIMIT 1), 0) AS last_cost
-            FROM products p
-            JOIN suppliers sup ON sup.id = p.supplier_id
-            WHERE p.isbn IN ({placeholders})""",
-        list(isbns)
+        """SELECT p.id, p.isbn, p.title, p.author, p.cover_price,
+                  sup.id    AS supplier_id,
+                  sup.name  AS supplier_name,
+                  sup.email AS supplier_email,
+                  sup.default_discount AS default_discount,
+                  COALESCE((SELECT di.delivery_price FROM delivery_items di
+                            WHERE di.product_id = p.id
+                            ORDER BY di.id DESC LIMIT 1), 0) AS last_cost
+           FROM products p
+           JOIN suppliers sup ON sup.id = p.supplier_id
+           WHERE p.product_type = 'Книга'"""
     ).fetchall()
     conn.close()
-    return {r["isbn"]: dict(r) for r in rows}
+    return [dict(r) for r in rows]
 
 
 def get_products_for_delivery():

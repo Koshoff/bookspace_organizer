@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 from datetime import date, timedelta
 import pandas as pd
 import styles
@@ -544,6 +545,9 @@ elif section == "Каталог":
                     st.text_input("Фискална група", value=auto_fiscal, disabled=True)
                     year = st.number_input("Година", min_value=0, value=2024, step=1)
                     cover_type = st.text_input("Корица (за книги)")
+                    crit_min = st.number_input(
+                        "Критичен минимум наличност", min_value=0, value=3, step=1,
+                        help="Под този праг ПОС-ът алармира при продажба.")
 
                 description = st.text_area("Описание")
 
@@ -557,7 +561,8 @@ elif section == "Каталог":
                         ok, msg = db.add_product(
                             isbn.strip(), title.strip(), author, supplier_id,
                             cover_price, auto_vat, year, cover_type, genre, description,
-                            product_type=type_db_value, fiscal_group=auto_fiscal
+                            product_type=type_db_value, fiscal_group=auto_fiscal,
+                            critical_minimum=crit_min
                         )
                         if ok:
                             st.success(msg)
@@ -622,6 +627,10 @@ elif section == "Каталог":
                     e_year = st.number_input("Година", min_value=0,
                                              value=int(cur["year"] or 0), step=1)
                     e_cover_type = st.text_input("Корица", value=cur["cover_type"] or "")
+                    e_crit_min = st.number_input(
+                        "Критичен минимум наличност", min_value=0,
+                        value=int(cur["critical_minimum"] if "critical_minimum" in cur.keys()
+                                  else 3), step=1)
                 e_description = st.text_area("Описание", value=cur["description"] or "")
 
                 save = st.form_submit_button("Запази промените", type="primary")
@@ -633,7 +642,8 @@ elif section == "Каталог":
                             cur["id"], e_isbn.strip(), e_title.strip(), e_author,
                             supplier_map[e_supplier_name], e_cover_price, e_vat,
                             e_year, e_cover_type, e_genre, e_description,
-                            product_type=e_type_db, fiscal_group=e_fiscal)
+                            product_type=e_type_db, fiscal_group=e_fiscal,
+                            critical_minimum=e_crit_min)
                         (st.success if ok else st.error)(msg)
                         if ok:
                             st.rerun()
@@ -849,22 +859,94 @@ elif section == "Доставки":
 elif section == "Нова продажба":
     st.title("Нова продажба")
 
+    # Канонични стойности за начина на плащане (както се пазят в базата).
+    PAY_CASH = "В брой (Каса)"
+    PAY_CARD = "Банков път / Карта"
+    PAY_COD = "Пощенски паричен превод (Куриер)"
+    LBL_CASH, LBL_CARD, LBL_COD = "В брой (F2)", "Карта (F4)", "Наложен платеж (F8)"
+    LBL_FINALIZE = "✅ ПРИКЛЮЧИ И ПЕЧАТАЙ БОН"
+    SCAN_LABEL = "Сканирай баркод (ISBN) — режим Светкавично сканиране"
+
     # Кошница за продажбата — пак в session_state.
     if "sale_cart" not in st.session_state:
         st.session_state.sale_cart = []
+    if "pos_payment" not in st.session_state:
+        st.session_state.pos_payment = PAY_COD   # както беше по подразбиране
 
-     # --- Горни полета: номера + начин на плащане ---
-    col1, col2, col3 = st.columns(3)
+    # --- ЗАДЪРЖАНА СМЕТКА (Hold/Park): бутон за възстановяване най-горе ---
+    parked = st.session_state.get("parked_cart")
+    if parked:
+        parked_total = sum(i["quantity"] * i["sale_price"] for i in parked)
+        if st.button(f"🔄 Възстанови задържана сметка (Сума: {parked_total:.2f} лв.)",
+                     use_container_width=True):
+            # Връщаме задържаната количка (замества текущата — паркираш, за да
+            # обслужиш следващия клиент, после възстановяваш).
+            st.session_state.sale_cart = parked
+            st.session_state.parked_cart = None
+            st.rerun()
+
+    # След приключена продажба нулираме „получената сума" ПРЕДИ да се създаде
+    # полето (иначе Streamlit не позволява промяна след инстанцииране).
+    if st.session_state.pop("pos_reset_received", False):
+        st.session_state.pos_received = 0.0
+
+    # --- Callback за светкавичното сканиране ---
+    # Извиква се при Enter в полето за баркод (пистолетът праща Enter сам).
+    # Добавя книгата с 1 бр. или инкрементира, после ИЗЧИСТВА полето.
+    def pos_scan_add():
+        code = (st.session_state.get("pos_scan") or "").strip()
+        st.session_state.pos_scan = ""        # готово за следващ скан
+        if not code:
+            return
+        book = db.get_product_for_sale(code)
+        if book is None:
+            st.session_state.pos_flash = ("error", f"Няма книга с ISBN „{code}“.")
+            return
+        cart = st.session_state.sale_cart
+        for it in cart:
+            if it["product_id"] == book["id"]:
+                if book["stock"] < it["quantity"] + 1:
+                    st.session_state.pos_flash = (
+                        "error", f"Няма още наличност за „{book['title']}“ "
+                        f"(налични: {book['stock']}).")
+                else:
+                    it["quantity"] += 1
+                    it["stock"] = book["stock"]                 # обновяваме наличността
+                    it["critical_minimum"] = book["critical_minimum"]
+                    st.session_state.pos_flash = (
+                        "success", f"+1 „{book['title']}“ → {it['quantity']} бр.")
+                return
+        if book["stock"] < 1:
+            st.session_state.pos_flash = (
+                "error", f"Няма наличност за „{book['title']}“.")
+            return
+        cart.append({
+            "product_id": book["id"], "title": book["title"],
+            "supplier_name": book["supplier_name"], "quantity": 1,
+            "cost_price": book["last_cost"], "sale_price": book["cover_price"],
+            "stock": book["stock"], "critical_minimum": book["critical_minimum"],
+        })
+        st.session_state.pos_flash = ("success", f"Добавена „{book['title']}“")
+
+    # --- Горни полета: номера на поръчка/товарителница ---
+    col1, col2 = st.columns(2)
     with col1:
         order_number = st.text_input("Номер на поръчка")
     with col2:
         waybill_number = st.text_input("Номер на товарителница (Еконт/Спиди)")
-    with col3:
-        payment_method = st.selectbox("Начин на плащане", [
-            "Пощенски паричен превод (Куриер)",
-            "В брой (Каса)",
-            "Банков път / Карта",
-        ])
+
+    # --- Начин на плащане като БУТОНИ (за да са управляеми с F2/F4/F8) ---
+    st.caption("Начин на плащане  ·  бързи клавиши: F2 брой · F4 карта · F8 наложен платеж")
+    pay_cols = st.columns(3)
+    for col, (lbl, val) in zip(pay_cols,
+                               [(LBL_CASH, PAY_CASH), (LBL_CARD, PAY_CARD),
+                                (LBL_COD, PAY_COD)]):
+        active = st.session_state.pos_payment == val
+        if col.button(lbl, key=f"pay_{val}", width='stretch',
+                      type="primary" if active else "secondary"):
+            st.session_state.pos_payment = val
+            st.rerun()
+    payment_method = st.session_state.pos_payment
     # --- Опция: плащане с ваучер ---
     use_voucher = st.checkbox("Плащане с ваучер вместо избрания начин")
     voucher_validated = None    # ще пази валидирания ваучер, ако има
@@ -912,43 +994,56 @@ elif section == "Нова продажба":
         }
 
     st.divider()
-    st.subheader("Добавяне на стока чрез ISBN")
+    st.subheader("⚡ Светкавично сканиране")
 
-    # --- Добавяне на ред ---
-    sc1, sc2 = st.columns([3, 1])
-    with sc1:
-        sale_isbn = st.text_input("Сканирай/въведи ISBN", key="sale_isbn")
-    with sc2:
-        sale_qty = st.number_input("Количество", min_value=1, value=1, step=1, key="sale_qty")
+    # Съобщение от последния скан (callback-ът не може да рисува сам).
+    flash = st.session_state.pop("pos_flash", None)
+    pos_beep_type = ""      # ще задейства звуковия сигнал долу
+    if flash:
+        (st.success if flash[0] == "success" else st.error)(flash[1])
+        pos_beep_type = flash[0]   # 'success' или 'error'
 
-    if st.button("Добави към продажбата"):
-        book = db.get_product_for_sale(sale_isbn.strip())
-        if book is None:
-            st.error(f"Няма книга с ISBN „{sale_isbn}“.")
-        elif book["stock"] < sale_qty:
-            st.error(f"Недостатъчна наличност (налични: {book['stock']}).")
-        else:
-            st.session_state.sale_cart.append({
-                "product_id": book["id"],
-                "title": book["title"],
-                "supplier_name": book["supplier_name"],
-                "quantity": sale_qty,
-                "cost_price": book["last_cost"],
-                "sale_price": book["cover_price"],
-            })
-            st.success(f"Добавена: {book['title']}")
+    # Едно поле — сканирай и натисни Enter (пистолетът го прави сам). Книгата
+    # се добавя/инкрементира автоматично, полето се изчиства. Без бутон „Добави".
+    st.text_input(SCAN_LABEL, key="pos_scan", on_change=pos_scan_add,
+                  placeholder="Сканирай баркод и продължавай — без мишка")
 
     # --- Кошница ---
     if st.session_state.sale_cart:
         st.subheader("Стоки в продажбата")
         df = pd.DataFrame(st.session_state.sale_cart)
+        # Съвместимост, ако ред е добавен преди тези полета да съществуват.
+        if "stock" not in df:
+            df["stock"] = 0
+        if "critical_minimum" not in df:
+            df["critical_minimum"] = 3
         df["ред_продажна"] = df["quantity"] * df["sale_price"]
         df["ред_доставна"] = df["quantity"] * df["cost_price"]
+        # Наличност СЛЕД тази продажба и индикатор за критичен минимум.
+        df["остатък"] = df["stock"] - df["quantity"]
+        df["Статус"] = df.apply(
+            lambda r: "🚨 Критична наличност"
+            if r["остатък"] <= r["critical_minimum"] else "", axis=1)
+
+        show = df.rename(columns={
+            "title": "Заглавие", "supplier_name": "Доставчик",
+            "quantity": "Кол.", "sale_price": "Цена",
+            "ред_продажна": "Сума", "остатък": "Наличност след продажба",
+        })
         st.dataframe(
-            df[["title", "supplier_name", "quantity", "cost_price",
-                "sale_price", "ред_продажна"]],
-            width='stretch', hide_index=True
-        )
+            show[["Заглавие", "Доставчик", "Кол.", "Цена", "Сума",
+                  "Наличност след продажба", "Статус"]],
+            width='stretch', hide_index=True)
+
+        # Обособен високо-контрастен банер за критичните заглавия.
+        critical = df[df["Статус"] != ""]["title"].tolist()
+        if critical:
+            titles = ", ".join(critical)
+            st.markdown(
+                "<div style='border:2px solid #1a1a1a;border-radius:10px;"
+                "padding:10px 16px;background:#1a1a1a;color:#ffffff;"
+                "font-weight:700;'>🚨 Критична наличност: " + titles + "</div>",
+                unsafe_allow_html=True)
 
         total_sale = df["ред_продажна"].sum()
         total_cost = df["ред_доставна"].sum()
@@ -957,9 +1052,48 @@ elif section == "Нова продажба":
         m2.metric("Доставна сума", f"{total_cost:.2f} лв.")
         m3.metric("Печалба", f"{total_sale - total_cost:.2f} лв.")
 
-        cA, cB = st.columns(2)
+        # --- АВТОМАТИЧНО РЕСТО (само при плащане „В брой" и без ваучер) ---
+        # Огромен контрастен шрифт — за да няма математически грешки на касата.
+        if payment_method == PAY_CASH and not use_voucher:
+            st.divider()
+            rc1, rc2 = st.columns([1, 1])
+            with rc1:
+                received = st.number_input("Получена сума от клиента (лв.)",
+                                           min_value=0.0, step=1.0,
+                                           key="pos_received")
+            change = float(received) - float(total_sale)
+            with rc2:
+                if received <= 0:
+                    box = ("<div style='border:2px solid #1a1a1a;border-radius:12px;"
+                           "padding:14px 20px;background:#f2f2f2;text-align:center;'>"
+                           "<div style='font-size:14px;color:#555;letter-spacing:1px;'>"
+                           "РЕСТО</div><div style='font-size:40px;font-weight:800;"
+                           "color:#1a1a1a;'>—</div></div>")
+                elif change >= 0:
+                    box = ("<div style='border:2px solid #1a1a1a;border-radius:12px;"
+                           "padding:14px 20px;background:#ffffff;text-align:center;'>"
+                           "<div style='font-size:14px;color:#555;letter-spacing:1px;'>"
+                           "РЕСТО ЗА КЛИЕНТА</div><div style='font-size:46px;"
+                           f"font-weight:800;color:#1a1a1a;'>{change:.2f} лв.</div></div>")
+                else:
+                    box = ("<div style='border:2px solid #1a1a1a;border-radius:12px;"
+                           "padding:14px 20px;background:#e6e6e6;text-align:center;'>"
+                           "<div style='font-size:14px;color:#555;letter-spacing:1px;'>"
+                           "НЕ ДОСТИГАТ</div><div style='font-size:46px;font-weight:800;"
+                           f"color:#1a1a1a;'>{abs(change):.2f} лв.</div></div>")
+                st.markdown(box, unsafe_allow_html=True)
+
+        st.divider()
+        cA, cHold, cB = st.columns([2, 1, 1])
+        with cHold:
+            # Задържане на сметката за следващ клиент (Hold/Park).
+            if st.button("⏸️ Задръж сметката", use_container_width=True):
+                st.session_state.parked_cart = list(st.session_state.sale_cart)
+                st.session_state.sale_cart = []
+                st.session_state.pos_reset_received = True
+                st.rerun()
         with cA:
-            if st.button("Завърши продажбата", type="primary"):
+            if st.button(LBL_FINALIZE, type="primary", use_container_width=True):
                 if use_voucher:
                     if not voucher_validated:
                         st.error("Първо провери ваучера с бутона „Провери код“.")
@@ -1013,13 +1147,86 @@ elif section == "Нова продажба":
                     st.session_state.sale_cart = []
                     st.session_state.checked_voucher = None
                     st.session_state.voucher_loss_acknowledged = False
+                    st.session_state.pos_reset_received = True   # нулирай рестото
                     st.rerun()
                 else:
                     st.error(msg)
         with cB:
-            if st.button("Изчисти"):
+            if st.button("Изчисти", use_container_width=True):
                 st.session_state.sale_cart = []
+                st.session_state.pos_reset_received = True
                 st.rerun()
+
+    # --- АВТО-ФОКУС + БЪРЗИ КЛАВИШИ (F2/F4/F8/Enter) ---
+    # Малко JS, инжектирано в РОДИТЕЛСКИЯ документ (за да преживее
+    # презареждането на iframe-а). Кликва съответните бутони по текст.
+    # Enter приключва САМО когато полето за скан е празно — иначе оставя
+    # сканирането да мине (пистолетът праща Enter след всеки баркод).
+    _pos_js = """
+    <script>
+    (function(){
+      var P = window.parent, D = P.document;
+      if(!P.__posKeysBound){
+        P.__posKeysBound = true;
+        var s = D.createElement('script');
+        s.textContent = "(" + function(){
+          function click(t){
+            var bs = document.querySelectorAll('button');
+            for(var i=0;i<bs.length;i++){
+              if(bs[i].innerText.trim() === t){ bs[i].click(); return; }
+            }
+          }
+          // Звуков сигнал през Web Audio (без файлове). success = кратък висок,
+          // error = двоен нисък. Контекстът се резюмира при първо действие.
+          window.__posBeep = function(type){
+            try{
+              var AC = window.AudioContext || window.webkitAudioContext;
+              var ctx = window.__posAC || (window.__posAC = new AC());
+              if(ctx.state === 'suspended'){ ctx.resume(); }
+              function tone(freq, start, dur){
+                var o = ctx.createOscillator(), g = ctx.createGain();
+                o.type = 'square'; o.frequency.value = freq;
+                o.connect(g); g.connect(ctx.destination);
+                g.gain.setValueAtTime(0.08, ctx.currentTime + start);
+                o.start(ctx.currentTime + start);
+                o.stop(ctx.currentTime + start + dur);
+              }
+              if(type === 'success'){ tone(880, 0, 0.12); }
+              else { tone(220, 0, 0.15); tone(220, 0.2, 0.15); }
+            }catch(e){}
+          };
+          document.addEventListener('keydown', function(e){
+            var c = window.__POS_CFG; if(!c) return;
+            if(e.key==='F2'){ e.preventDefault(); click(c.cash); }
+            else if(e.key==='F4'){ e.preventDefault(); click(c.card); }
+            else if(e.key==='F8'){ e.preventDefault(); click(c.cod); }
+            else if(e.key==='Enter'){
+              var inp = document.querySelector('input[aria-label="'+c.scan+'"]');
+              if(!inp || inp.value.trim()===''){ e.preventDefault(); click(c.fin); }
+            }
+          }, true);
+        }.toString() + ")();";
+        D.body.appendChild(s);
+      }
+      // Конфигурацията (етикетите) — обновяваме я при всяко зареждане.
+      P.__POS_CFG = {scan:"__SCAN__", cash:"__CASH__", card:"__CARD__",
+                     cod:"__COD__", fin:"__FIN__"};
+      // Авто-фокус на полето за скан след всяко презареждане.
+      setTimeout(function(){
+        var inp = D.querySelector('input[aria-label="__SCAN__"]');
+        if(inp){ inp.focus(); }
+      }, 80);
+      // Звуков сигнал за резултата от последния скан (ако има).
+      var beep = "__BEEP__";
+      if(beep){ setTimeout(function(){ if(P.__posBeep){ P.__posBeep(beep); } }, 30); }
+    })();
+    </script>
+    """
+    _pos_js = (_pos_js.replace("__SCAN__", SCAN_LABEL)
+               .replace("__CASH__", LBL_CASH).replace("__CARD__", LBL_CARD)
+               .replace("__COD__", LBL_COD).replace("__FIN__", LBL_FINALIZE)
+               .replace("__BEEP__", pos_beep_type))
+    components.html(_pos_js, height=0)
 
 
 # ----- ЕКРАН: AI МАРКЕТИНГ -----
@@ -1413,23 +1620,29 @@ elif section == "Автоматични заявки":
 
             if df is not None:
                 cols = importer.detect_columns(df)
-                if not cols["isbn"] or not cols["qty"]:
-                    st.error("Не открих колони за ISBN и Количество. Очаквам "
-                             "колони като „ISBN/Баркод“ и „Количество“.")
+                if not cols["qty"] or (not cols["isbn"] and not cols["title"]):
+                    st.error("Не открих нужните колони. Очаквам „Количество“ и "
+                             "поне едно от „ISBN/Баркод“ или „Заглавие“.")
                 else:
                     parsed = importer.parse_rows(df, cols)
                     if not parsed:
                         st.warning("Файлът е прочетен, но няма валидни редове "
-                                   "(липсва ISBN или количеството е 0).")
+                                   "(липсва ISBN/заглавие или количеството е 0).")
                     else:
-                        # --- Стъпка 2: свързване с каталога (една заявка) ---
-                        lookup = db.get_products_by_isbns(
-                            [p["isbn"] for p in parsed])
+                        # --- Стъпка 1+2: едно зареждане на каталога, после
+                        # засичане в паметта (по ISBN, после по заглавие) ---
+                        catalog = db.get_catalog_for_matching()
+                        matched_list, unmatched = importer.resolve_rows(parsed, catalog)
                         # --- Стъпка 3: групиране по доставчик ---
-                        groups, unmatched = importer.group_by_supplier(parsed, lookup)
+                        groups = importer.group_matched(matched_list)
 
-                        matched = sum(len(g["items"]) for g in groups.values())
-                        st.success(f"Успешно обработени {matched} продукта от файла!")
+                        n_matched = len(matched_list)
+                        by_isbn = sum(1 for m in matched_list if m["method"] == "isbn")
+                        by_title = sum(1 for m in matched_list if m["method"] == "title")
+                        st.success(f"Успешно обработени {n_matched} продукта от файла!")
+                        if n_matched:
+                            st.caption(f"Засечени: {by_isbn} по ISBN · "
+                                       f"{by_title} по заглавие.")
 
                         # --- Стъпка 3 (визуализация): таблица по доставчик ---
                         if groups:
@@ -1443,12 +1656,12 @@ elif section == "Автоматични заявки":
                                         "isbn": "ISBN", "title": "Заглавие",
                                         "delivery_price": "Доставна цена",
                                         "cover_price": "Корична цена",
-                                        "qty": "Брой поръчани",
-                                        "line_delivery": "Обща доставна сума",
+                                        "qty": "Бройка за поръчка",
+                                        "line_delivery": "Обща стойност",
                                     })
                                     view_cols = ["Доставчик", "ISBN", "Заглавие",
                                                  "Доставна цена", "Корична цена",
-                                                 "Брой поръчани", "Обща доставна сума"]
+                                                 "Бройка за поръчка", "Обща стойност"]
                                     st.dataframe(tdf[view_cols], width='stretch',
                                                  hide_index=True)
                                     st.caption(
@@ -1505,23 +1718,27 @@ elif section == "Автоматични заявки":
                                 unknown_df = pd.DataFrame([{
                                     "ISBN": u["isbn"],
                                     "Заглавие": u["title"] or "",
+                                    "Количество": int(u["qty"]),
                                     "Корична цена": float(u["cover_price"] or 0.0),
                                     "Доставчик/Издателство": "",
                                 } for u in unmatched])
 
-                                st.caption("Избери издателство за всеки ред. Доставната "
-                                           "цена се изчислява автоматично от стандартната "
-                                           "отстъпка на доставчика.")
+                                st.caption("Въведи продажна (корична) цена и избери "
+                                           "издателство за всеки ред. Доставната цена се "
+                                           "изчислява автоматично от стандартната отстъпка "
+                                           "на доставчика. (За редове само със заглавие "
+                                           "попълни и ISBN.)")
                                 edited = st.data_editor(
                                     unknown_df, key="unknown_products_editor",
                                     width='stretch', hide_index=True,
                                     column_config={
-                                        "ISBN": st.column_config.TextColumn(
-                                            "ISBN", disabled=True),
+                                        "ISBN": st.column_config.TextColumn("ISBN"),
                                         "Заглавие": st.column_config.TextColumn("Заглавие"),
+                                        "Количество": st.column_config.NumberColumn(
+                                            "Количество (от файла)", disabled=True),
                                         "Корична цена": st.column_config.NumberColumn(
-                                            "Корична цена", min_value=0.0, step=0.5,
-                                            format="%.2f"),
+                                            "Въведи Продажна (Корична) цена",
+                                            min_value=0.0, step=0.5, format="%.2f"),
                                         "Доставчик/Издателство": st.column_config.SelectboxColumn(
                                             "Избери Доставчик/Издателство",
                                             options=sup_names),
@@ -1536,7 +1753,11 @@ elif section == "Автоматични заявки":
                                         if not sup_name or sup_name not in sup_name_to_id:
                                             skipped += 1
                                             continue
-                                        isbn = str(row["ISBN"]).strip()
+                                        isbn = str(row["ISBN"] or "").strip()
+                                        if not isbn:
+                                            # ISBN е задължителен ключ в каталога.
+                                            errors.append("(ред без ISBN) — попълни ISBN")
+                                            continue
                                         title = (str(row["Заглавие"]) or "").strip() or isbn
                                         try:
                                             cover = float(row["Корична цена"] or 0.0)

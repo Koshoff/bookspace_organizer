@@ -97,6 +97,7 @@ def get_product_for_sale(isbn):
     conn = get_connection()
     row = conn.execute(
         """SELECT p.id, p.isbn, p.title, p.author, p.cover_price,
+                  p.critical_minimum,
                   s.name AS supplier_name,
                   COALESCE((SELECT SUM(quantity_change) FROM stock_movements m
                             WHERE m.product_id = p.id), 0) AS stock,
