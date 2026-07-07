@@ -499,8 +499,8 @@ elif section == "Доставчици":
 elif section == "Каталог":
     st.title("Продуктов каталог")
 
-    tab_list, tab_add, tab_edit = st.tabs(["Списък", "Добави книга",
-                                           "Редактирай/Изтрий"])
+    tab_list, tab_add, tab_edit, tab_dossier = st.tabs(
+        ["Списък", "Добави книга", "Редактирай/Изтрий", "📖 Досие на книгата"])
 
     # --- ТАБ: ДОБАВИ КНИГА ---
     with tab_add:
@@ -672,6 +672,81 @@ elif section == "Каталог":
                     if st.button("Отказ", key="cancel_del_prod"):
                         st.session_state.pending_delete_product = None
                         st.rerun()
+
+    # --- ТАБ: ДОСИЕ НА КНИГАТА (пълна история на движението) ---
+    with tab_dossier:
+        dossier_products = db.get_all_products_full()
+        if not dossier_products:
+            st.info("Няма книги в номенклатурата.")
+        else:
+            prod_map = {f"{p['title']} · {p['isbn']}": p for p in dossier_products}
+            chosen_label = st.selectbox("Избери книга за досие",
+                                        list(prod_map.keys()), key="dossier_pick")
+            book = prod_map[chosen_label]
+            pid = book["id"]
+
+            # --- ОБЩ ПРЕГЛЕД ---
+            current_stock = db.get_current_stock(pid)
+            last_price = book["last_delivery_price"]
+            last_price_str = (f"{last_price:.2f} лв." if last_price is not None
+                              else "—")
+            st.divider()
+            o1, o2, o3, o4 = st.columns(4)
+            o1.metric("ISBN", book["isbn"])
+            o2.metric("Заглавие", book["title"])
+            o3.metric("Наличност (склад)", f"{current_stock} бр.")
+            o4.metric("Последна доставна цена", last_price_str)
+
+            # --- ТАБЛИЦА 1: ИСТОРИЯ НА ДОСТАВКИТЕ ---
+            st.divider()
+            st.subheader("История на доставките (покупки)")
+            deliv_hist = db.get_product_delivery_history(pid)
+            if not deliv_hist:
+                st.warning("⚠️ Няма нито една доставка за тази книга.")
+            else:
+                # Ясно предупреждение, ако книгата не е доставяна от над 2 години.
+                from datetime import date as _d
+                try:
+                    last_deliv = max(h["doc_date"] for h in deliv_hist)
+                    years_ago_2 = (_d.today().replace(year=_d.today().year - 2)
+                                   ).isoformat()
+                    if str(last_deliv) < years_ago_2:
+                        st.warning(f"⚠️ Няма доставки от над 2 години "
+                                   f"(последна: {last_deliv}).")
+                except (ValueError, TypeError):
+                    pass
+                ddf = pd.DataFrame(deliv_hist).rename(columns={
+                    "doc_date": "Дата", "doc_type": "Документ",
+                    "doc_number": "Номер", "supplier_name": "Доставчик",
+                    "settlement_type": "Тип", "quantity": "Количество",
+                    "delivery_price": "Доставна цена",
+                })
+                st.dataframe(ddf[["Дата", "Документ", "Номер", "Доставчик",
+                                  "Тип", "Количество", "Доставна цена"]],
+                             width='stretch', hide_index=True)
+                st.caption(f"Общо заприходени: "
+                           f"{sum(h['quantity'] for h in deliv_hist)} бр. "
+                           f"през {len(deliv_hist)} доставки.")
+
+            # --- ТАБЛИЦА 2: ИСТОРИЯ НА ПРОДАЖБИТЕ ---
+            st.divider()
+            st.subheader("История на продажбите")
+            sales_hist = db.get_product_sales_history(pid)
+            if not sales_hist:
+                st.info("Няма нито една продажба за тази книга.")
+            else:
+                sdf = pd.DataFrame(sales_hist).rename(columns={
+                    "created_at": "Дата и час", "order_number": "Поръчка №",
+                    "status": "Статус", "quantity": "Количество",
+                    "sale_price": "Продажна цена",
+                })
+                st.dataframe(sdf[["Дата и час", "Поръчка №", "Статус",
+                                  "Количество", "Продажна цена"]],
+                             width='stretch', hide_index=True)
+                sold_ok = sum(h["quantity"] for h in sales_hist
+                              if h["status"] != "Отказана")
+                st.caption(f"Общо продадени (без отказани): {sold_ok} бр. "
+                           f"през {len(sales_hist)} записа.")
 
 
 # ----- ЕКРАН: ДОСТАВКИ (Модул 3) -----

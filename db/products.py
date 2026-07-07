@@ -167,6 +167,42 @@ def get_product_for_delivery(isbn):
     return dict(row) if row else None
 
 
+def get_product_delivery_history(product_id):
+    """История на ДОСТАВКИТЕ (покупките) за една книга — за екрана „Досие".
+    Всеки ред: дата, тип/номер документ, доставчик, количество, доставна цена."""
+    conn = get_connection()
+    rows = conn.execute(
+        """SELECT d.doc_date, d.doc_type, d.doc_number,
+                  sup.name AS supplier_name,
+                  di.quantity, di.delivery_price, di.settlement_type
+           FROM delivery_items di
+           JOIN deliveries d  ON d.id = di.delivery_id
+           JOIN suppliers sup ON sup.id = d.supplier_id
+           WHERE di.product_id = ?
+           ORDER BY d.doc_date DESC, d.id DESC""",
+        (product_id,)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_product_sales_history(product_id):
+    """История на ПРОДАЖБИТЕ за една книга (ПОС или импорт от сайта).
+    Всеки ред: дата/час, номер поръчка, статус, продадено количество, цена."""
+    conn = get_connection()
+    rows = conn.execute(
+        """SELECT s.created_at, s.order_number, s.status,
+                  si.quantity, si.sale_price
+           FROM sale_items si
+           JOIN sales s ON s.id = si.sale_id
+           WHERE si.product_id = ?
+           ORDER BY s.created_at DESC, s.id DESC""",
+        (product_id,)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
 def get_products_for_delivery():
     """Връща книгите във вид, удобен за избор при доставка:
     {ISBN: {id, title, author, supplier_id}}. Ползва се за сканиране по ISBN."""
