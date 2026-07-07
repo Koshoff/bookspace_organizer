@@ -5,7 +5,8 @@ import sqlite3
 
 # ---------- ДОСТАВКИ (Модул 3) ----------
 
-def create_delivery(supplier_id, doc_type, doc_number, doc_date, items, payment_type, operator="система"):
+def create_delivery(supplier_id, doc_type, doc_number, doc_date, items, payment_type,
+                    operator="система", invoice_file_path=None):
     """
     Създава ЦЯЛА доставка в една транзакция: капак + редове + складови движения.
     'items' е списък от речници, всеки с: product_id, quantity, settlement_type,
@@ -24,9 +25,11 @@ def create_delivery(supplier_id, doc_type, doc_number, doc_date, items, payment_
 
         # --- 1. КАПАКЪТ: редът в deliveries ---
         cur.execute(
-            """INSERT INTO deliveries (supplier_id, doc_type, doc_number, doc_date, payment_type)
-               VALUES (?, ?, ?, ?, ?)""",
-            (supplier_id, doc_type, doc_number, doc_date, payment_type)
+            """INSERT INTO deliveries (supplier_id, doc_type, doc_number, doc_date,
+                                       payment_type, invoice_file_path)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (supplier_id, doc_type, doc_number, doc_date, payment_type,
+             invoice_file_path)
         )
         # lastrowid ни дава id-то на МЕЖДУ САМО ВКАРАНИЯ ред — трябва ни,
         # за да вържем редовете и движенията към ТАЗИ доставка.
@@ -98,6 +101,7 @@ def get_deliveries(supplier_id=None, payment_status=None, date_from=None, date_t
             d.delivery_paid_date,
             s.name AS supplier_name,
             d.payment_type,
+            d.invoice_file_path,
             COALESCE(SUM(di.quantity * di.delivery_price), 0) AS total_amount
         FROM deliveries d
         JOIN suppliers s ON s.id = d.supplier_id

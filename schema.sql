@@ -69,6 +69,8 @@ CREATE TABLE IF NOT EXISTS deliveries (
     delivery_paid_date TEXT,
     -- Начин на плащане на доставката (Подход А). Различно от settlement_type на ред!
     payment_type    TEXT    NOT NULL DEFAULT 'Консигнация (отложено)',
+    -- Път към прикачен файл (снимка/PDF на хартиената фактура). NULL = няма.
+    invoice_file_path TEXT,
     created_at      TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
     FOREIGN KEY (supplier_id) REFERENCES suppliers(id)
 );
