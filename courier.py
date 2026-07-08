@@ -55,9 +55,9 @@ def parse_courier_text(text):
         line = line.strip()
         if not line:
             continue
-        # Нормализираме разделителите ';' и таб към интервал.
-        norm = line.replace(";", " ").replace("\t", " ")
-        m = re.match(r"^\s*(\S+)\s+(.*)$", norm)
+        # Номерът е водещият низ до първия разделител (интервал/таб/';'/','),
+        # останалото е сумата. Така работи и за comma-separated редове.
+        m = re.match(r"^\s*([^\s,;]+)[\s,;]+(.*)$", line)
         if not m:
             continue
         waybill = m.group(1).strip()
@@ -82,7 +82,8 @@ def parse_courier_file(uploaded_file):
     """Чете Excel/CSV отчет от куриера и връща [(waybill, amount)]."""
     name = (getattr(uploaded_file, "name", "") or "").lower()
     if name.endswith(".csv"):
-        df = pd.read_csv(uploaded_file)
+        # sep=None разпознава разделителя (',' или ';').
+        df = pd.read_csv(uploaded_file, sep=None, engine="python")
     else:
         df = pd.read_excel(uploaded_file)
 

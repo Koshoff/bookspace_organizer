@@ -25,7 +25,9 @@ def read_sales_file(uploaded_file):
     """Чете качения файл в pandas DataFrame според разширението му."""
     name = (getattr(uploaded_file, "name", "") or "").lower()
     if name.endswith(".csv"):
-        return pd.read_csv(uploaded_file)
+        # sep=None + engine='python' разпознава разделителя (',' или ';' —
+        # българските Excel експорти често са с ';').
+        return pd.read_csv(uploaded_file, sep=None, engine="python")
     return pd.read_excel(uploaded_file)
 
 

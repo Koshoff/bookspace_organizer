@@ -34,25 +34,27 @@ def get_sales_journal(date_from, date_to):
 
     journal = []
 
-    # За всяка продажба теглим редовете отделно — за да различим ваучерни от книжни.
+    # За всяка продажба теглим редовете отделно — за да различим групите по
+    # РЕАЛНИЯ vat_rate/fiscal_group: книги (9% Б), стоки (20% В), ваучери (0% Д).
     for s in sales:
         rows = conn.execute(
-            """SELECT product_id, voucher_id, quantity, sale_price
-               FROM sale_items WHERE sale_id = ?""",
+            """SELECT si.voucher_id, si.quantity, si.sale_price,
+                      p.fiscal_group, p.vat_rate
+               FROM sale_items si
+               LEFT JOIN products p ON p.id = si.product_id
+               WHERE si.sale_id = ?""",
             (s["sale_id"],)
         ).fetchall()
 
-        # Разделяме на две групи суми: книжна (9%) и ваучерна (0%).
-        book_total = 0.0
-        voucher_total = 0.0
+        book9 = goods20 = voucher0 = 0.0
         for r in rows:
             line_total = r["quantity"] * r["sale_price"]
             if r["voucher_id"] is not None:
-                # Ред-ваучер — 0% ДДС, група Д.
-                voucher_total += line_total
+                voucher0 += line_total
+            elif (r["vat_rate"] or 0) >= 20 or r["fiscal_group"] == "В":
+                goods20 += line_total
             else:
-                # Ред-книга — 9% ДДС, група Б.
-                book_total += line_total
+                book9 += line_total
 
         # Описание на плащането — ясно за счетоводителя.
         if s["payment_method"] == "Ваучер" and s["supplementary_amount"] > 0:
@@ -61,38 +63,37 @@ def get_sales_journal(date_from, date_to):
         else:
             pay_desc = s["payment_method"]
 
-        # Книжната част (ако има) — отделен ред в дневника с 9% ДДС.
-        if book_total > 0:
-            base = round(book_total / 1.09, 2)
-            vat = round(book_total - base, 2)
-            journal.append({
-                "Документ": s["invoice_number"] or f"Поръчка №{s['order_number'] or '-'}",
-                "Данъчна основа": base,
-                "ДДС ставка": "9%",
-                "Начислено ДДС": vat,
-                "Обща стойност с ДДС": round(book_total, 2),
-                "Фискална група": "Б",
-                "Тип плащане": pay_desc,
-                "Статус": "Продажба (книги)",
-            })
+        doc = s["invoice_number"] or f"Поръчка №{s['order_number'] or '-'}"
 
-        # Ваучерната част (ако има) — отделен ред с 0% ДДС, група Д.
-        if voucher_total > 0:
+        if book9 > 0:
+            base = round(book9 / 1.09, 2)
+            journal.append({
+                "Документ": doc, "Данъчна основа": base, "ДДС ставка": "9%",
+                "Начислено ДДС": round(book9 - base, 2),
+                "Обща стойност с ДДС": round(book9, 2), "Фискална група": "Б",
+                "Тип плащане": pay_desc, "Статус": "Продажба (книги)",
+            })
+        if goods20 > 0:
+            base = round(goods20 / 1.20, 2)
+            journal.append({
+                "Документ": doc, "Данъчна основа": base, "ДДС ставка": "20%",
+                "Начислено ДДС": round(goods20 - base, 2),
+                "Обща стойност с ДДС": round(goods20, 2), "Фискална група": "В",
+                "Тип плащане": pay_desc, "Статус": "Продажба (стоки)",
+            })
+        if voucher0 > 0:
             journal.append({
                 "Документ": f"Издаване ваучер: {s['order_number'] or '-'}",
-                "Данъчна основа": round(voucher_total, 2),
-                "ДДС ставка": "0%",
-                "Начислено ДДС": 0.0,
-                "Обща стойност с ДДС": round(voucher_total, 2),
-                "Фискална група": "Д",
-                "Тип плащане": pay_desc,
+                "Данъчна основа": round(voucher0, 2), "ДДС ставка": "0%",
+                "Начислено ДДС": 0.0, "Обща стойност с ДДС": round(voucher0, 2),
+                "Фискална група": "Д", "Тип плащане": pay_desc,
                 "Статус": "Продажба (ваучер)",
             })
 
-    # Кредитните известия — по тяхната дата, с минус, както преди.
+    # Кредитните известия — по тяхната дата, с минус. Класифицираме върнатата
+    # стока по група (9%/20%) от редовете на оригиналната продажба.
     credits = conn.execute(
-        """SELECT cn.created_at, cn.original_receipt, cn.returned_amount,
-                  s.payment_method
+        """SELECT cn.created_at, cn.original_receipt, cn.sale_id, s.payment_method
            FROM credit_notes cn
            JOIN sales s ON s.id = cn.sale_id
            WHERE date(cn.created_at) >= ? AND date(cn.created_at) <= ?
@@ -101,19 +102,43 @@ def get_sales_journal(date_from, date_to):
     ).fetchall()
 
     for c in credits:
-        total = -c["returned_amount"]
-        base = round(total / 1.09, 2)
-        vat = round(total - base, 2)
-        journal.append({
-            "Документ": f"КИ към бележка №{c['original_receipt']}",
-            "Данъчна основа": base,
-            "ДДС ставка": "9%",
-            "Начислено ДДС": vat,
-            "Обща стойност с ДДС": round(total, 2),
-            "Фискална група": "Б",
-            "Тип плащане": c["payment_method"],
-            "Статус": "Кредитно известие",
-        })
+        lines = conn.execute(
+            """SELECT si.voucher_id, si.quantity, si.sale_price,
+                      p.fiscal_group, p.vat_rate
+               FROM sale_items si
+               LEFT JOIN products p ON p.id = si.product_id
+               WHERE si.sale_id = ?""",
+            (c["sale_id"],)
+        ).fetchall()
+        r9 = r20 = 0.0
+        for l in lines:
+            amt = l["quantity"] * l["sale_price"]
+            if l["voucher_id"] is not None:
+                continue
+            elif (l["vat_rate"] or 0) >= 20 or l["fiscal_group"] == "В":
+                r20 += amt
+            else:
+                r9 += amt
+        if r9 > 0:
+            total = -r9
+            base = round(total / 1.09, 2)
+            journal.append({
+                "Документ": f"КИ към бележка №{c['original_receipt']}",
+                "Данъчна основа": base, "ДДС ставка": "9%",
+                "Начислено ДДС": round(total - base, 2),
+                "Обща стойност с ДДС": round(total, 2), "Фискална група": "Б",
+                "Тип плащане": c["payment_method"], "Статус": "Кредитно известие",
+            })
+        if r20 > 0:
+            total = -r20
+            base = round(total / 1.20, 2)
+            journal.append({
+                "Документ": f"КИ към бележка №{c['original_receipt']}",
+                "Данъчна основа": base, "ДДС ставка": "20%",
+                "Начислено ДДС": round(total - base, 2),
+                "Обща стойност с ДДС": round(total, 2), "Фискална група": "В",
+                "Тип плащане": c["payment_method"], "Статус": "Кредитно известие",
+            })
 
     conn.close()
     return journal
@@ -234,23 +259,62 @@ def get_sales_vat_journal(date_from, date_to):
 
 def get_vat_breakdown(date_from, date_to):
     """
-    Обобщени суми по трите данъчни групи за периода (от платените продажби).
-    Връща {'Б':{base,vat,gross}, 'В':{...}, 'Д':{gross}}.
+    Обобщени суми по трите данъчни групи за периода. НЕТИРА кредитните известия
+    (сторно) — както дневникът на продажбите — за да не се над-декларира ДДС.
+    Връща {'Б':{base,vat,gross}, 'В':{...}, 'Д':{base,vat,gross}}.
+
+    Забележка: следва конвенцията на get_sales_journal (платени продажби минус
+    кредитни известия по дата на КИ). Продажба, платена и сторнирана в ЕДИН и
+    същ период, се третира като нетно намаление — същото като в експорта.
     """
-    rows = get_sales_vat_journal(date_from, date_to)
-    b = {"base": 0.0, "vat": 0.0, "gross": 0.0}
-    v = {"base": 0.0, "vat": 0.0, "gross": 0.0}
-    d = {"base": 0.0, "vat": 0.0, "gross": 0.0}
-    for r in rows:
-        b["base"] += r["Оборот 9%"]; b["vat"] += r["ДДС 9%"]
-        v["base"] += r["Оборот 20%"]; v["vat"] += r["ДДС 20%"]
-        d["gross"] += r["Ваучер 0%"]; d["base"] += r["Ваучер 0%"]
-    b["gross"] = round(b["base"] + b["vat"], 2)
-    v["gross"] = round(v["base"] + v["vat"], 2)
-    for grp in (b, v, d):
-        for k in grp:
-            grp[k] = round(grp[k], 2)
-    return {"Б": b, "В": v, "Д": d}
+    conn = get_connection()
+    sale_lines = conn.execute(
+        """SELECT si.voucher_id, si.quantity, si.sale_price,
+                  p.fiscal_group, p.vat_rate
+           FROM sales s
+           JOIN sale_items si ON si.sale_id = s.id
+           LEFT JOIN products p ON p.id = si.product_id
+           WHERE s.status = 'Платена'
+             AND date(s.created_at) >= ? AND date(s.created_at) <= ?""",
+        (date_from, date_to)
+    ).fetchall()
+    # Нетираме само КИ за продажби от ПРЕДХОДЕН период. Продажба, платена и
+    # сторнирана в текущия период, вече е изключена от платените (status стана
+    # 'Отказана'), затова допълнително изваждане би било двойно броене.
+    return_lines = conn.execute(
+        """SELECT si.voucher_id, si.quantity, si.sale_price,
+                  p.fiscal_group, p.vat_rate
+           FROM credit_notes cn
+           JOIN sales s ON s.id = cn.sale_id
+           JOIN sale_items si ON si.sale_id = cn.sale_id
+           LEFT JOIN products p ON p.id = si.product_id
+           WHERE date(cn.created_at) >= ? AND date(cn.created_at) <= ?
+             AND date(s.created_at) < ?""",
+        (date_from, date_to, date_from)
+    ).fetchall()
+    conn.close()
+
+    def _cls(r):
+        if r["voucher_id"] is not None:
+            return "Д"
+        if (r["vat_rate"] or 0) >= 20 or r["fiscal_group"] == "В":
+            return "В"
+        return "Б"
+
+    gross = {"Б": 0.0, "В": 0.0, "Д": 0.0}
+    for r in sale_lines:
+        gross[_cls(r)] += r["quantity"] * r["sale_price"]
+    for r in return_lines:
+        gross[_cls(r)] -= r["quantity"] * r["sale_price"]
+
+    def _grp(g, rate):
+        if rate == 0:
+            return {"base": round(g, 2), "vat": 0.0, "gross": round(g, 2)}
+        base = round(g / (1 + rate / 100), 2)
+        return {"base": base, "vat": round(g - base, 2), "gross": round(g, 2)}
+
+    return {"Б": _grp(gross["Б"], 9), "В": _grp(gross["В"], 20),
+            "Д": _grp(gross["Д"], 0)}
 
 
 def get_sales_payment_breakdown(date_from, date_to):
@@ -718,15 +782,17 @@ def build_accounting_excel(date_from, date_to):
     row = 2
     for s in sales:
         total = s["Обща стойност с ДДС"]
-        is_voucher = s["ДДС ставка"] == "0%"
+        rate = s["ДДС ставка"]
         ws.cell(row=row, column=1, value=s["Документ"])
-        if is_voucher:
+        if rate == "0%":
             ws.cell(row=row, column=2, value=total)
             ws.cell(row=row, column=3, value="0%")
             ws.cell(row=row, column=4, value=0)
         else:
-            ws.cell(row=row, column=2, value=f"=E{row}/1.09")
-            ws.cell(row=row, column=3, value=s["ДДС ставка"])
+            # Правилният делител според ставката (1.09 за 9%, 1.20 за 20%).
+            divisor = "1.20" if rate == "20%" else "1.09"
+            ws.cell(row=row, column=2, value=f"=E{row}/{divisor}")
+            ws.cell(row=row, column=3, value=rate)
             ws.cell(row=row, column=4, value=f"=E{row}-B{row}")
         ws.cell(row=row, column=5, value=total)
         ws.cell(row=row, column=6, value=s["Фискална група"])
