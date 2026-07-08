@@ -7,6 +7,7 @@ import db   # нашият слой за достъп до базата
 import mailer   # сервизен слой за автоматичните заявки по имейл
 import importer   # разчитане на файл с продажби от онлайн магазина
 import storage   # локален архив за прикачените фактури
+import courier   # засичане на куриерски отчети (Спиди/Еконт)
 import os
 import base64
 
@@ -27,6 +28,7 @@ section = [
     ("Нова продажба", "🛒"),
     ("Ваучери", "🎁"),
     ("Журнал продажби", "📊"),
+    ("Засичане куриери", "🚚"),
     ("Автоматични заявки", "📨"),
     ("Кредитни известия", "↩️"),
     ("Счетоводство", "🧾"),
@@ -2106,6 +2108,115 @@ elif section == "Автоматични заявки":
                                         # Реобработваме файла — създадените вече се
                                         # разпознават и влизат в заявките за деня.
                                         st.rerun()
+
+
+# ----- ЕКРАН: МАСОВО ЗАСИЧАНЕ НА ТОВАРИТЕЛНИЦИ (Контрол на куриери) -----
+elif section == "Засичане куриери":
+    st.title("🚚 Масово засичане на товарителници")
+    st.caption("Съпоставя отчета на куриера (Спиди/Еконт) с продажбите и "
+               "автоматично осчетоводява точните съвпадения.")
+
+    # --- 1. ДВА МЕТОДА ЗА ВКАРВАНЕ НА ОТЧЕТА ---
+    tab_text, tab_file = st.tabs(["Постави текст", "Качи файл (Excel/CSV)"])
+    pairs = []
+    with tab_text:
+        st.caption("Всеки ред: `Номер_на_товарителница  Сума` (напр. "
+                   "`1234567890  25.90`).")
+        raw = st.text_area("Отчет от куриера", height=180, key="courier_text")
+        if raw and raw.strip():
+            pairs = courier.parse_courier_text(raw)
+    with tab_file:
+        up = st.file_uploader("Качи файла с отчета от куриера",
+                              type=["xlsx", "csv"], key="courier_file")
+        if up is not None:
+            try:
+                file_pairs, (wcol, acol) = courier.parse_courier_file(up)
+            except Exception as e:
+                st.error(f"Неуспешно прочитане на файла: {e}")
+                file_pairs = []
+            if not file_pairs:
+                st.error("Не открих колони за товарителница и сума в файла.")
+            else:
+                pairs = file_pairs   # файлът има приоритет, ако е качен
+
+    if not pairs:
+        st.info("Постави текст или качи файл, за да стартираш засичането.")
+    else:
+        # --- 2. ФИНАНСОВ ОДИТ ---
+        lookup = db.get_sales_by_waybills([w for w, _ in pairs])
+        audit = courier.reconcile(pairs, lookup)
+        matched = audit["matched"]
+        mismatched = audit["mismatched"]
+        unknown = audit["unknown"]
+
+        # --- 3. KPI ТАБЛО ---
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("Получено от куриера", f"{audit['total_received']:.2f} лв.")
+        k2.metric("Съвпадащи поръчки", len(matched))
+        k3.metric("Разминавания", len(mismatched))
+        k4.metric("Непознати товарителници", len(unknown))
+        st.divider()
+
+        # --- ПЪЛНО СЪВПАДЕНИЕ → осчетоводяване ---
+        st.subheader("✅ Пълно съвпадение")
+        if not matched:
+            st.info("Няма точни съвпадения.")
+        else:
+            to_pay = [m for m in matched if m["status"] != "Платена"]
+            mdf = pd.DataFrame(matched).rename(columns={
+                "order_number": "Поръчка №", "waybill": "Товарителница",
+                "bookspace": "Сума Bookspace", "speedy": "Сума куриер",
+                "status": "Статус",
+            })
+            st.dataframe(mdf[["Поръчка №", "Товарителница", "Сума Bookspace",
+                              "Сума куриер", "Статус"]],
+                         width='stretch', hide_index=True)
+            if to_pay:
+                if st.button(f"✅ Осчетоводи {len(to_pay)} съвпадащи поръчки "
+                             "като ПЛАТЕНИ", type="primary",
+                             use_container_width=True):
+                    for m in to_pay:
+                        db.set_sale_status(m["sale_id"], "Платена")
+                    st.success(f"Осчетоводени {len(to_pay)} поръчки като платени.")
+                    st.rerun()
+            else:
+                st.caption("Всички съвпадащи поръчки вече са платени.")
+
+        # --- РАЗМИНАВАНИЯ (червена таблица + ръчно одобрение) ---
+        st.divider()
+        st.subheader("⚠️ Разминавания в сумата")
+        if not mismatched:
+            st.success("Няма финансови разминавания.")
+        else:
+            for m in mismatched:
+                with st.container(border=True):
+                    cols = st.columns([1.2, 1.4, 1, 1, 1, 1.2])
+                    cols[0].markdown(f"**Поръчка №{m['order_number']}**")
+                    cols[1].markdown(f"Товар.: `{m['waybill']}`")
+                    cols[2].metric("Bookspace", f"{m['bookspace']:.2f}")
+                    cols[3].metric("Куриер", f"{m['speedy']:.2f}")
+                    cols[4].metric("Разлика", f"{m['diff']:.2f}")
+                    with cols[5]:
+                        if st.button("Ръчно одобрение",
+                                     key=f"approve_{m['sale_id']}",
+                                     help="Приеми разликата и маркирай платена"):
+                            db.set_sale_status(m["sale_id"], "Платена")
+                            st.success(f"Поръчка №{m['order_number']} — "
+                                       "одобрена ръчно и маркирана платена.")
+                            st.rerun()
+
+        # --- НЕПОЗНАТИ ТОВАРИТЕЛНИЦИ ---
+        st.divider()
+        st.subheader("❌ Непознати товарителници")
+        if not unknown:
+            st.success("Всички товарителници бяха разпознати.")
+        else:
+            with st.container(border=True):
+                udf = pd.DataFrame(unknown).rename(columns={
+                    "waybill": "Товарителница", "speedy": "Сума от куриера"})
+                st.dataframe(udf, width='stretch', hide_index=True)
+                st.caption("Тези номера липсват в базата — провери за печатна "
+                           "грешка или непродадена/невъведена поръчка.")
 
 
 # ----- ЕКРАН: КРЕДИТНИ ИЗВЕСТИЯ (Модул 6) -----

@@ -209,6 +209,31 @@ def get_sold_books_for_reorder(date_from, date_to):
     conn.close()
     return rows
 
+def get_sales_by_waybills(waybills):
+    """
+    Връща {waybill_number: {id, order_number, status, total}} за подадените
+    товарителници — за масовото засичане на куриерски отчети. Една заявка.
+    total = продажната сума (сборът от редовете).
+    """
+    waybills = [w for w in waybills if w]
+    if not waybills:
+        return {}
+    conn = get_connection()
+    placeholders = ",".join("?" * len(waybills))
+    rows = conn.execute(
+        f"""SELECT s.id, s.order_number, s.waybill_number, s.status,
+                   COALESCE(SUM(si.quantity * si.sale_price), 0) AS total
+            FROM sales s
+            LEFT JOIN sale_items si ON si.sale_id = s.id
+            WHERE s.waybill_number IN ({placeholders})
+            GROUP BY s.id""",
+        list(waybills)
+    ).fetchall()
+    conn.close()
+    # Ако (рядко) две продажби делят номер, печели последно въведената.
+    return {r["waybill_number"]: dict(r) for r in rows}
+
+
 def get_daily_supplier_reorders(day):
     """
     Връща продадените КНИГИ за конкретен ден (формат 'YYYY-MM-DD'), с доставчик
