@@ -2380,19 +2380,36 @@ elif section == "Счетоводство":
 elif section == "Склад и одит":
     st.title("Склад и одит на продукт")
 
-    # --- Бързо търсене ---
-    search = st.text_input("Търси по заглавие, автор или ISBN")
+    # --- Смарт търсачка: едно поле → четири колони (заглавие/автор/ISBN/издателство) ---
+    sc1, sc2 = st.columns([3, 1])
+    with sc1:
+        search = st.text_input(
+            "🔍 Търсене в склада (Въведете Автор, Заглавие, Издателство или ISBN):")
+    with sc2:
+        available_only = st.checkbox("Покажи само налични (> 0)")
     search_arg = search.strip() if search.strip() else None
 
-    stock = db.search_stock(search_arg)
+    stock = db.search_stock(search_arg, available_only=available_only)
 
     if not stock:
-        st.info("Няма намерени книги.")
+        st.info("Няма намерени книги по този критерий.")
     else:
-        # Текущи наличности
-        st.subheader("Текущи наличности")
+        st.subheader("Резултати")
         df = pd.DataFrame([dict(s) for s in stock])
-        st.dataframe(df, width='stretch', hide_index=True)
+        # Последната доставна цена може да е NULL (книга без доставки) → „—".
+        df["last_delivery_price"] = df["last_delivery_price"].apply(
+            lambda v: f"{v:.2f}" if v is not None else "—")
+        df = df.rename(columns={
+            "isbn": "ISBN", "title": "Заглавие", "author": "Автор",
+            "supplier_name": "Издателство", "stock": "Наличност (бр.)",
+            "cover_price": "Корична цена",
+            "last_delivery_price": "Последна доставна цена",
+        })
+        st.dataframe(
+            df[["ISBN", "Заглавие", "Автор", "Издателство", "Наличност (бр.)",
+                "Корична цена", "Последна доставна цена"]],
+            width='stretch', hide_index=True)
+        st.caption(f"Намерени {len(stock)} заглавия.")
 
         # --- Одит на конкретна книга ---
         st.divider()
