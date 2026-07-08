@@ -29,6 +29,7 @@ section = [
     ("Журнал продажби", "📊"),
     ("Автоматични заявки", "📨"),
     ("Кредитни известия", "↩️"),
+    ("Счетоводство", "🧾"),
     ("Склад и одит", "🔍"),
     ("Годишно приключване", "📋"),
     ("Фирмени Разходи", "💰")
@@ -519,14 +520,19 @@ elif section == "Каталог":
             with st.form("form_add_product", clear_on_submit=True):
                 # Изборът на тип определя ДДС и фискалната група автоматично.
                 product_type = st.selectbox(
-                    "Тип артикул", ["Книга", "Подаръчен ваучер"],
-                    help="Книга = 9% ДДС, група Б. Ваучер = 0% ДДС, група Д."
+                    "Тип артикул", ["Книга", "Подаръчен ваучер", "Стока (20% ДДС)"],
+                    help="Книга = 9% ДДС (група Б). Ваучер = 0% ДДС (група Д). "
+                         "Стока = 20% ДДС (група В) — аксесоари, чаши, тефтери."
                 )
                 # Свързваме типа с ДДС и фискалната група. Един източник на истина.
                 if product_type == "Книга":
                     auto_vat = 9.0
                     auto_fiscal = "Б"
                     type_db_value = "Книга"
+                elif product_type == "Стока (20% ДДС)":
+                    auto_vat = 20.0
+                    auto_fiscal = "В"
+                    type_db_value = "Стока"
                 else:
                     auto_vat = 0.0
                     auto_fiscal = "Д"
@@ -602,12 +608,16 @@ elif section == "Каталог":
 
             with st.form(f"form_edit_product_{cur['id']}"):
                 # Типът пак определя ДДС/фискална група (един източник на истина).
-                type_options = ["Книга", "Подаръчен ваучер"]
-                type_index = 0 if cur["product_type"] == "Книга" else 1
+                type_options = ["Книга", "Подаръчен ваучер", "Стока (20% ДДС)"]
+                type_index = {"Книга": 0, "Ваучер": 1, "Стока": 2}.get(
+                    cur["product_type"], 0)
                 e_type = st.selectbox("Тип артикул", type_options, index=type_index,
-                                      help="Книга = 9% ДДС, група Б. Ваучер = 0% ДДС, група Д.")
+                                      help="Книга = 9% (Б). Ваучер = 0% (Д). "
+                                           "Стока = 20% (В).")
                 if e_type == "Книга":
                     e_vat, e_fiscal, e_type_db = 9.0, "Б", "Книга"
+                elif e_type == "Стока (20% ДДС)":
+                    e_vat, e_fiscal, e_type_db = 20.0, "В", "Стока"
                 else:
                     e_vat, e_fiscal, e_type_db = 0.0, "Д", "Ваучер"
 
@@ -2123,6 +2133,136 @@ elif section == "Кредитни известия":
         df = pd.DataFrame([dict(n) for n in notes])
         st.dataframe(df, width='stretch', hide_index=True)
 
+
+# ----- ЕКРАН: СЧЕТОВОДСТВО И ДДС ОТЧЕТНОСТ -----
+elif section == "Счетоводство":
+    st.title("🧾 Счетоводство и ДДС отчетност")
+    st.caption("Оборотни ведомости по ЗДДС / ЗКПО / Наредба Н-18 за избран период")
+
+    # --- 1. КАЛЕНДАРЕН ФИЛТЪР С БЪРЗИ БУТОНИ ---
+    if "acc_period" not in st.session_state:
+        st.session_state.acc_period = "Текущ месец"
+
+    today_d = date.today()
+    st.caption("Период")
+    pcols = st.columns(4)
+    for pc, plabel in zip(pcols, ["Текущ месец", "Предходен месец",
+                                   "Година", "Избран период"]):
+        active = st.session_state.acc_period == plabel
+        if pc.button(plabel, width='stretch', key=f"acc_p_{plabel}",
+                     type="primary" if active else "secondary"):
+            st.session_state.acc_period = plabel
+            st.rerun()
+
+    chosen_p = st.session_state.acc_period
+    if chosen_p == "Текущ месец":
+        acc_from = today_d.replace(day=1)
+        acc_to = today_d
+    elif chosen_p == "Предходен месец":
+        first_this = today_d.replace(day=1)
+        acc_to = first_this - timedelta(days=1)
+        acc_from = acc_to.replace(day=1)
+    elif chosen_p == "Година":
+        acc_from = today_d.replace(month=1, day=1)
+        acc_to = today_d
+    else:
+        ac1, ac2 = st.columns(2)
+        acc_from = ac1.date_input("От", value=today_d.replace(day=1), key="acc_from")
+        acc_to = ac2.date_input("До", value=today_d, key="acc_to")
+
+    d_from, d_to = str(acc_from), str(acc_to)
+    st.caption(f"Справките са за: {d_from} — {d_to}")
+    st.divider()
+
+    # --- 2А. СПРАВКА ПО НАЧИНИ НА ПЛАЩАНЕ ---
+    st.subheader("А) Оборот по начини на плащане")
+    pay = db.get_sales_payment_breakdown(d_from, d_to)
+    cash = pay.get("В брой (Каса)", 0.0)
+    cod = pay.get("Пощенски паричен превод (Куриер)", 0.0)
+    card_bank = pay.get("Банков път / Карта", 0.0)
+    voucher = pay.get("Ваучер", 0.0)
+    pm1, pm2, pm3, pm4 = st.columns(4)
+    pm1.metric("В брой", f"{cash:.2f} лв.")
+    pm2.metric("Наложен платеж (куриер)", f"{cod:.2f} лв.")
+    pm3.metric("Карта / Банков път", f"{card_bank:.2f} лв.")
+    pm4.metric("Платено с ваучер", f"{voucher:.2f} лв.")
+    st.caption("Забележка: картовите ПОС плащания и директният банков път се "
+               "пазят в една стойност в базата. За разделянето им е нужен "
+               "отделен метод на плащане — кажи, ако го искаш.")
+
+    st.divider()
+
+    # --- 2Б. ДДС РАЗБИВКА ПО ГРУПИ ---
+    st.subheader("Б) ДДС разбивка по данъчни групи (Наредба Н-18)")
+    vat = db.get_vat_breakdown(d_from, d_to)
+    gb, gv, gd = vat["Б"], vat["В"], vat["Д"]
+    vb1, vb2, vb3 = st.columns(3)
+    with vb1:
+        st.markdown("**Група Б — 9% (книги)**")
+        st.metric("Оборот с ДДС", f"{gb['gross']:.2f} лв.")
+        st.caption(f"Основа: {gb['base']:.2f} лв. · ДДС 9%: {gb['vat']:.2f} лв.")
+    with vb2:
+        st.markdown("**Група В — 20% (стоки)**")
+        st.metric("Оборот с ДДС", f"{gv['gross']:.2f} лв.")
+        st.caption(f"Основа: {gv['base']:.2f} лв. · ДДС 20%: {gv['vat']:.2f} лв.")
+    with vb3:
+        st.markdown("**Група Д — 0% (ваучери)**")
+        st.metric("Оборот", f"{gd['gross']:.2f} лв.")
+        st.caption("Без начислено ДДС.")
+
+    st.divider()
+
+    # --- 2В. ЖУРНАЛ НА СТОРНО ОПЕРАЦИИТЕ ---
+    st.subheader("В) Журнал на сторно операциите (кредитни известия)")
+    returns = db.get_returns_journal(d_from, d_to)
+    if not returns:
+        st.info("Няма сторно операции за периода.")
+    else:
+        rdf = pd.DataFrame(returns)
+        st.dataframe(rdf, width='stretch', hide_index=True)
+        tot_ret = sum(r["Върната сума"] for r in returns)
+        tot_units = sum(r["Върнати бройки"] for r in returns)
+        rc1, rc2 = st.columns(2)
+        rc1.metric("Общо върнато (намаление ДДС основа)", f"{tot_ret:.2f} лв.")
+        rc2.metric("Върнати бройки на склад", tot_units)
+
+    st.divider()
+
+    # --- 2Г. КОНСИГНАЦИЯ ---
+    st.subheader("Г) Взаимоотношения по консигнация")
+    consign = db.get_consignment_report(d_from, d_to)
+    if not consign:
+        st.info("Няма продадена консигнация за периода.")
+    else:
+        cdf = pd.DataFrame(consign).rename(columns={
+            "supplier_name": "Издателство", "sold_qty": "Продадени бройки",
+            "owed_to_publisher": "Сума за отчитане (без ДДС)",
+            "bookstore_margin": "Марж книжарница",
+        })
+        st.dataframe(cdf[["Издателство", "Продадени бройки",
+                          "Сума за отчитане (без ДДС)", "Марж книжарница"]],
+                     width='stretch', hide_index=True)
+        st.caption("За тези суми се изисква входяща фактура от издателството.")
+
+    st.divider()
+
+    # --- 3. ЕДНОКЛИКОВ ЕКСПОРТ ---
+    st.subheader("Експорт за счетоводство")
+    acc_key = (d_from, d_to)
+    if st.button("📥 Генерирай файл за Счетоводство", type="primary",
+                 use_container_width=True):
+        st.session_state.acc_full_excel = {
+            "period": acc_key,
+            "data": db.build_full_accounting_excel(d_from, d_to),
+        }
+    ae = st.session_state.get("acc_full_excel")
+    if ae and ae["period"] == acc_key:
+        st.download_button(
+            "⬇️ Свали Excel за счетоводство",
+            data=ae["data"],
+            file_name=f"schetovodstvo_{d_from}_{d_to}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
 
 
 # ----- ЕКРАН: СКЛАД И ОДИТ (Модул 7) -----

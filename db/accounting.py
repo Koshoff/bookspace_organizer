@@ -158,6 +158,311 @@ def get_purchases_journal(date_from, date_to):
     return journal
 
 
+# ---------- СЧЕТОВОДНА СЕКЦИЯ (Б/В/Д, плащания, сторно) ----------
+
+def _payment_desc(payment_method, supp_method, supp_amount):
+    """Четимо описание на плащането, вкл. ваучер с доплащане."""
+    if payment_method == "Ваучер" and (supp_amount or 0) > 0:
+        return f"Ваучер + {supp_method} ({supp_amount:.2f} лв.)"
+    return payment_method
+
+
+def get_sales_vat_journal(date_from, date_to):
+    """
+    Дневник на продажбите с РАЗДЕЛЕНИ ставки по фискална група на всеки ред:
+      - Група Б (9%)  — книги,
+      - Група В (20%) — стоки/мърчандайз (vat_rate 20 или fiscal_group 'В'),
+      - Група Д (0%)  — ваучерни редове.
+    Един документ може да съдържа и трите. Връща по един ред на документ с
+    данъчни основи и ДДС за 9% и 20% + ваучерната част.
+    Използва РЕАЛНИЯ vat_rate/fiscal_group на продукта, не твърдо 9%.
+    """
+    conn = get_connection()
+    sales = conn.execute(
+        """SELECT s.id, s.created_at, s.order_number, s.invoice_number,
+                  s.payment_method, s.supplementary_payment_method,
+                  s.supplementary_amount
+           FROM sales s
+           WHERE s.status = 'Платена'
+             AND date(s.created_at) >= ? AND date(s.created_at) <= ?
+           ORDER BY s.created_at""",
+        (date_from, date_to)
+    ).fetchall()
+
+    out = []
+    for s in sales:
+        lines = conn.execute(
+            """SELECT si.voucher_id, si.quantity, si.sale_price,
+                      p.fiscal_group, p.vat_rate
+               FROM sale_items si
+               LEFT JOIN products p ON p.id = si.product_id
+               WHERE si.sale_id = ?""",
+            (s["id"],)
+        ).fetchall()
+
+        gross9 = gross20 = voucher0 = 0.0
+        for l in lines:
+            amt = l["quantity"] * l["sale_price"]
+            if l["voucher_id"] is not None:
+                voucher0 += amt
+            elif (l["vat_rate"] or 0) >= 20 or l["fiscal_group"] == "В":
+                gross20 += amt
+            else:
+                gross9 += amt
+
+        base9 = round(gross9 / 1.09, 2)
+        vat9 = round(gross9 - base9, 2)
+        base20 = round(gross20 / 1.20, 2)
+        vat20 = round(gross20 - base20, 2)
+
+        out.append({
+            "Документ": s["invoice_number"] or f"Поръчка №{s['order_number'] or '-'}",
+            "Дата": s["created_at"],
+            "Оборот 9%": base9,
+            "ДДС 9%": vat9,
+            "Оборот 20%": base20,
+            "ДДС 20%": vat20,
+            "Ваучер 0%": round(voucher0, 2),
+            "Общо с ДДС": round(gross9 + gross20 + voucher0, 2),
+            "Тип плащане": _payment_desc(s["payment_method"],
+                                         s["supplementary_payment_method"],
+                                         s["supplementary_amount"]),
+        })
+    conn.close()
+    return out
+
+
+def get_vat_breakdown(date_from, date_to):
+    """
+    Обобщени суми по трите данъчни групи за периода (от платените продажби).
+    Връща {'Б':{base,vat,gross}, 'В':{...}, 'Д':{gross}}.
+    """
+    rows = get_sales_vat_journal(date_from, date_to)
+    b = {"base": 0.0, "vat": 0.0, "gross": 0.0}
+    v = {"base": 0.0, "vat": 0.0, "gross": 0.0}
+    d = {"base": 0.0, "vat": 0.0, "gross": 0.0}
+    for r in rows:
+        b["base"] += r["Оборот 9%"]; b["vat"] += r["ДДС 9%"]
+        v["base"] += r["Оборот 20%"]; v["vat"] += r["ДДС 20%"]
+        d["gross"] += r["Ваучер 0%"]; d["base"] += r["Ваучер 0%"]
+    b["gross"] = round(b["base"] + b["vat"], 2)
+    v["gross"] = round(v["base"] + v["vat"], 2)
+    for grp in (b, v, d):
+        for k in grp:
+            grp[k] = round(grp[k], 2)
+    return {"Б": b, "В": v, "Д": d}
+
+
+def get_sales_payment_breakdown(date_from, date_to):
+    """
+    Оборот от платените продажби, разбит по начин на плащане (за съпоставка с
+    банка/Z-отчети). Ваучерната част отива в „Ваучер", а доплащането — към
+    съответния метод. Връща {метод: сума}.
+    """
+    from collections import defaultdict
+    conn = get_connection()
+    rows = conn.execute(
+        """SELECT s.payment_method, s.supplementary_payment_method,
+                  s.supplementary_amount,
+                  COALESCE(SUM(si.quantity * si.sale_price), 0) AS total
+           FROM sales s
+           LEFT JOIN sale_items si ON si.sale_id = s.id
+           WHERE s.status = 'Платена'
+             AND date(s.created_at) >= ? AND date(s.created_at) <= ?
+           GROUP BY s.id""",
+        (date_from, date_to)
+    ).fetchall()
+    conn.close()
+
+    buckets = defaultdict(float)
+    for r in rows:
+        total = r["total"]
+        pm = r["payment_method"]
+        supp = r["supplementary_amount"] or 0
+        if pm == "Ваучер":
+            buckets["Ваучер"] += max(0.0, total - supp)
+            if supp > 0 and r["supplementary_payment_method"]:
+                buckets[r["supplementary_payment_method"]] += supp
+        else:
+            buckets[pm] += total
+    return {k: round(val, 2) for k, val in buckets.items()}
+
+
+def get_returns_journal(date_from, date_to):
+    """
+    Журнал на сторно операциите (кредитни известия) за периода: дата, оригинална
+    бележка, номер поръчка, върната сума (отрицателна) и върнати бройки на склад.
+    """
+    conn = get_connection()
+    rows = conn.execute(
+        """SELECT cn.created_at, cn.original_receipt, cn.returned_amount,
+                  s.order_number,
+                  COALESCE((SELECT SUM(si.quantity) FROM sale_items si
+                            WHERE si.sale_id = cn.sale_id
+                              AND si.product_id IS NOT NULL), 0) AS returned_units
+           FROM credit_notes cn
+           JOIN sales s ON s.id = cn.sale_id
+           WHERE date(cn.created_at) >= ? AND date(cn.created_at) <= ?
+           ORDER BY cn.created_at DESC""",
+        (date_from, date_to)
+    ).fetchall()
+    conn.close()
+    result = []
+    for r in rows:
+        result.append({
+            "Дата на сторно": r["created_at"],
+            "Оригинална бележка/поръчка": r["original_receipt"]
+            or (r["order_number"] or "-"),
+            "Върната сума": -round(r["returned_amount"], 2),
+            "Върнати бройки": r["returned_units"],
+        })
+    return result
+
+
+def build_full_accounting_excel(date_from, date_to):
+    """
+    Единен счетоводен Excel за периода в стил Sleek Monochrome:
+      Лист 1 „Обобщение"  — плащания + ДДС по групи Б/В/Д.
+      Лист 2 „Дневник на Продажбите" — по документ с отделни колони
+             Оборот 9% / ДДС 9% / Оборот 20% / ДДС 20% (+ Ваучер 0%), SUM тотали.
+      Лист 3 „Сторно"     — кредитни известия (върнати суми/бройки).
+      Лист 4 „Консигнация" — дължимо към издателствата за периода.
+    Тъмни хедъри (#1A1A1A), зебра ефект и =SUM() формули за тоталите.
+    """
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from io import BytesIO
+
+    HEAD_FILL = PatternFill("solid", fgColor="1A1A1A")
+    HEAD_FONT = Font(bold=True, color="FFFFFF")
+    ZEBRA = PatternFill("solid", fgColor="F2F2F2")
+    BOLD = Font(bold=True)
+
+    def write_header(ws, headers, row=1):
+        for col, h in enumerate(headers, start=1):
+            c = ws.cell(row=row, column=col, value=h)
+            c.fill = HEAD_FILL
+            c.font = HEAD_FONT
+            c.alignment = Alignment(horizontal="center")
+
+    def zebra_row(ws, row, ncols):
+        if row % 2 == 0:
+            for col in range(1, ncols + 1):
+                ws.cell(row=row, column=col).fill = ZEBRA
+
+    wb = Workbook()
+
+    # ---------- ЛИСТ 1: ОБОБЩЕНИЕ ----------
+    ws = wb.active
+    ws.title = "Обобщение"
+    ws.cell(row=1, column=1, value=f"Счетоводно обобщение {date_from} — {date_to}").font = Font(bold=True, size=14)
+
+    ws.cell(row=3, column=1, value="Оборот по начин на плащане").font = BOLD
+    write_header(ws, ["Начин на плащане", "Сума (лв.)"], row=4)
+    pay = get_sales_payment_breakdown(date_from, date_to)
+    r = 5
+    for method, amount in sorted(pay.items()):
+        ws.cell(row=r, column=1, value=method)
+        ws.cell(row=r, column=2, value=round(amount, 2))
+        zebra_row(ws, r, 2)
+        r += 1
+    if r > 5:
+        ws.cell(row=r, column=1, value="ОБЩО").font = BOLD
+        ws.cell(row=r, column=2, value=f"=SUM(B5:B{r-1})").font = BOLD
+    r += 2
+
+    ws.cell(row=r, column=1, value="ДДС разбивка по данъчни групи").font = BOLD
+    r += 1
+    write_header(ws, ["Група", "Оборот (основа)", "ДДС", "Общо с ДДС"], row=r)
+    vat = get_vat_breakdown(date_from, date_to)
+    labels = {"Б": "Група Б (9% — книги)", "В": "Група В (20% — стоки)",
+              "Д": "Група Д (0% — ваучери)"}
+    r += 1
+    for key in ("Б", "В", "Д"):
+        g = vat[key]
+        ws.cell(row=r, column=1, value=labels[key])
+        ws.cell(row=r, column=2, value=g["base"])
+        ws.cell(row=r, column=3, value=g["vat"])
+        ws.cell(row=r, column=4, value=g["gross"])
+        zebra_row(ws, r, 4)
+        r += 1
+    ws.cell(row=r, column=1, value="ОБЩО").font = BOLD
+    ws.cell(row=r, column=2, value=f"=SUM(B{r-3}:B{r-1})").font = BOLD
+    ws.cell(row=r, column=3, value=f"=SUM(C{r-3}:C{r-1})").font = BOLD
+    ws.cell(row=r, column=4, value=f"=SUM(D{r-3}:D{r-1})").font = BOLD
+
+    # ---------- ЛИСТ 2: ДНЕВНИК НА ПРОДАЖБИТЕ ----------
+    ws2 = wb.create_sheet("Дневник на Продажбите")
+    headers2 = ["Документ", "Дата", "Оборот 9%", "ДДС 9%", "Оборот 20%",
+                "ДДС 20%", "Ваучер 0%", "Общо с ДДС", "Тип плащане"]
+    write_header(ws2, headers2)
+    journal = get_sales_vat_journal(date_from, date_to)
+    row = 2
+    for j in journal:
+        ws2.cell(row=row, column=1, value=j["Документ"])
+        ws2.cell(row=row, column=2, value=j["Дата"])
+        ws2.cell(row=row, column=3, value=j["Оборот 9%"])
+        ws2.cell(row=row, column=4, value=j["ДДС 9%"])
+        ws2.cell(row=row, column=5, value=j["Оборот 20%"])
+        ws2.cell(row=row, column=6, value=j["ДДС 20%"])
+        ws2.cell(row=row, column=7, value=j["Ваучер 0%"])
+        ws2.cell(row=row, column=8, value=j["Общо с ДДС"])
+        ws2.cell(row=row, column=9, value=j["Тип плащане"])
+        zebra_row(ws2, row, len(headers2))
+        row += 1
+    if row > 2:
+        ws2.cell(row=row, column=1, value="ОБЩО").font = BOLD
+        for col in range(3, 9):     # C..H са числови
+            letter = chr(ord('A') + col - 1)
+            ws2.cell(row=row, column=col,
+                     value=f"=SUM({letter}2:{letter}{row-1})").font = BOLD
+
+    # ---------- ЛИСТ 3: СТОРНО ----------
+    ws3 = wb.create_sheet("Сторно")
+    headers3 = ["Дата на сторно", "Оригинална бележка/поръчка",
+                "Върната сума", "Върнати бройки"]
+    write_header(ws3, headers3)
+    returns = get_returns_journal(date_from, date_to)
+    row = 2
+    for rr in returns:
+        ws3.cell(row=row, column=1, value=rr["Дата на сторно"])
+        ws3.cell(row=row, column=2, value=rr["Оригинална бележка/поръчка"])
+        ws3.cell(row=row, column=3, value=rr["Върната сума"])
+        ws3.cell(row=row, column=4, value=rr["Върнати бройки"])
+        zebra_row(ws3, row, len(headers3))
+        row += 1
+    if row > 2:
+        ws3.cell(row=row, column=1, value="ОБЩО").font = BOLD
+        ws3.cell(row=row, column=3, value=f"=SUM(C2:C{row-1})").font = BOLD
+        ws3.cell(row=row, column=4, value=f"=SUM(D2:D{row-1})").font = BOLD
+
+    # ---------- ЛИСТ 4: КОНСИГНАЦИЯ ----------
+    ws4 = wb.create_sheet("Консигнация")
+    headers4 = ["Издателство", "Продадени бройки", "Сума за отчитане (без ДДС)",
+                "Марж книжарница"]
+    write_header(ws4, headers4)
+    consign = get_consignment_report(date_from, date_to)
+    row = 2
+    for c in consign:
+        ws4.cell(row=row, column=1, value=c["supplier_name"])
+        ws4.cell(row=row, column=2, value=c["sold_qty"])
+        ws4.cell(row=row, column=3, value=c["owed_to_publisher"])
+        ws4.cell(row=row, column=4, value=c["bookstore_margin"])
+        zebra_row(ws4, row, len(headers4))
+        row += 1
+    if row > 2:
+        ws4.cell(row=row, column=1, value="ОБЩО").font = BOLD
+        for col in (2, 3, 4):
+            letter = chr(ord('A') + col - 1)
+            ws4.cell(row=row, column=col,
+                     value=f"=SUM({letter}2:{letter}{row-1})").font = BOLD
+
+    buffer = BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
 def get_consignment_report(date_from, date_to):
     """
     Отчет за продадена КОНСИГНАЦИЯ, групиран по издателство.
