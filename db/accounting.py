@@ -26,7 +26,8 @@ def get_sales_journal(date_from, date_to):
                s.supplementary_payment_method,
                s.supplementary_amount
            FROM sales s
-           WHERE s.status = 'Платена'
+           WHERE (s.status = 'Платена'
+                  OR EXISTS (SELECT 1 FROM credit_notes cn WHERE cn.sale_id = s.id))
              AND date(s.created_at) >= ? AND date(s.created_at) <= ?
            ORDER BY s.created_at""",
         (date_from, date_to)
@@ -208,7 +209,8 @@ def get_sales_vat_journal(date_from, date_to):
                   s.payment_method, s.supplementary_payment_method,
                   s.supplementary_amount
            FROM sales s
-           WHERE s.status = 'Платена'
+           WHERE (s.status = 'Платена'
+                  OR EXISTS (SELECT 1 FROM credit_notes cn WHERE cn.sale_id = s.id))
              AND date(s.created_at) >= ? AND date(s.created_at) <= ?
            ORDER BY s.created_at""",
         (date_from, date_to)
@@ -274,23 +276,22 @@ def get_vat_breakdown(date_from, date_to):
            FROM sales s
            JOIN sale_items si ON si.sale_id = s.id
            LEFT JOIN products p ON p.id = si.product_id
-           WHERE s.status = 'Платена'
+           WHERE (s.status = 'Платена'
+                  OR EXISTS (SELECT 1 FROM credit_notes cn WHERE cn.sale_id = s.id))
              AND date(s.created_at) >= ? AND date(s.created_at) <= ?""",
         (date_from, date_to)
     ).fetchall()
-    # Нетираме само КИ за продажби от ПРЕДХОДЕН период. Продажба, платена и
-    # сторнирана в текущия период, вече е изключена от платените (status стана
-    # 'Отказана'), затова допълнително изваждане би било двойно броене.
+    # Всяко кредитно известие в периода се вади (по своята дата). Оригиналната
+    # продажба вече е броена като положителна (виж EXISTS горе), затова
+    # изваждането нетира вярно — и за същопериодно, и за минало сторно.
     return_lines = conn.execute(
         """SELECT si.voucher_id, si.quantity, si.sale_price,
                   p.fiscal_group, p.vat_rate
            FROM credit_notes cn
-           JOIN sales s ON s.id = cn.sale_id
            JOIN sale_items si ON si.sale_id = cn.sale_id
            LEFT JOIN products p ON p.id = si.product_id
-           WHERE date(cn.created_at) >= ? AND date(cn.created_at) <= ?
-             AND date(s.created_at) < ?""",
-        (date_from, date_to, date_from)
+           WHERE date(cn.created_at) >= ? AND date(cn.created_at) <= ?""",
+        (date_from, date_to)
     ).fetchall()
     conn.close()
 
