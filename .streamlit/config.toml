@@ -1,7 +1,9 @@
 [theme]
+# Стил „Хибрид": хартиено-неутрален фон, мастилено черен текст,
+# един сдържан акцент ink-teal за активни/основни действия.
 base = "light"
-primaryColor = "#000000"
-backgroundColor = "#ffffff"
-secondaryBackgroundColor = "#ededed"
-textColor = "#111111"
+primaryColor = "#12695f"
+backgroundColor = "#f4f5f3"
+secondaryBackgroundColor = "#ffffff"
+textColor = "#1a1c1a"
 font = "sans serif"

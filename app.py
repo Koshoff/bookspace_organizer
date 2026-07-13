@@ -17,44 +17,47 @@ st.set_page_config(page_title="Bookspace ERP", layout="wide")
 styles.apply_styles()
 
 
-# ----- СТРАНИЧНО МЕНЮ (Sidebar) -----
-# Засега има само един раздел. С добавянето на модули списъкът ще расте.
+# ----- СТРАНИЧНО МЕНЮ (навигационен рейл, групиран като ERP) -----
 st.sidebar.title("📚 Bookspace")
-section = [
-    ("Табло", "🏠"),
-    ("Доставчици", "🏢"),
-    ("Каталог", "📖"),
-    ("Доставки", "📦"),
-    ("AI Маркетинг", "🎯"),
-    ("Нова продажба", "🛒"),
-    ("Ваучери", "🎁"),
-    ("Журнал продажби", "📊"),
-    ("Засичане куриери", "🚚"),
-    ("Автоматични заявки", "📨"),
-    ("Кредитни известия", "↩️"),
-    ("Счетоводство", "🧾"),
-    ("Склад и одит", "🔍"),
-    ("Годишно приключване", "📋"),
-    ("Фирмени Разходи", "💰")
-]
+st.sidebar.caption("ERP · Складова система")
 
+# Навигацията е групирана по функция. Имената са ключовете за if/elif по-долу —
+# не се преименуват; тук само подреждаме и добавяме групови заглавия.
+NAV_GROUPS = [
+    ("Търговия", [
+        ("Табло", "🏠"), ("Нова продажба", "🛒"),
+        ("Журнал продажби", "📊"), ("Засичане куриери", "🚚"),
+    ]),
+    ("Склад", [
+        ("Доставки", "📦"), ("Склад и одит", "🔍"), ("Каталог", "📖"),
+        ("Доставчици", "🏢"), ("Годишно приключване", "📋"),
+    ]),
+    ("Маркетинг", [
+        ("AI Маркетинг", "🎯"), ("Автоматични заявки", "📨"),
+    ]),
+    ("Финанси", [
+        ("Ваучери", "🎁"), ("Счетоводство", "🧾"),
+        ("Кредитни известия", "↩️"), ("Фирмени Разходи", "💰"),
+    ]),
+]
 
 # Помним активната секция в session_state — бутоните не пазят състояние сами.
 if "active_section" not in st.session_state:
-    st.session_state.active_section = section[0][0]   # първата по подразбиране
+    st.session_state.active_section = "Табло"
 
-# Рисуваме по един бутон на секция. Активният е "primary" (тъмен фон).
-for name, icon in section:
-    is_active = (st.session_state.active_section == name)
-    if st.sidebar.button(
-        f"{icon}  {name}",
-        key=f"nav_{name}",
-        width='stretch',
-        type="primary" if is_active else "secondary",
-    ):
-        # Клик → сменяме активната секция и презареждаме, за да се пребоядиса менюто.
-        st.session_state.active_section = name
-        st.rerun()
+# Рисуваме групите с малко заглавие, после бутоните. Активният е "primary".
+for group_name, items in NAV_GROUPS:
+    st.sidebar.caption(group_name)
+    for name, icon in items:
+        is_active = (st.session_state.active_section == name)
+        if st.sidebar.button(
+            f"{icon}  {name}",
+            key=f"nav_{name}",
+            width='stretch',
+            type="primary" if is_active else "secondary",
+        ):
+            st.session_state.active_section = name
+            st.rerun()
 
 # Оттук нататък целият код чете от session_state вместо от старата променлива.
 section = st.session_state.active_section
