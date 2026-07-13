@@ -150,6 +150,18 @@ def test_consignment_report_first_sold_across_time(seed, run_sql):
     assert rep[0]["sold_qty"] == 2 and abs(rep[0]["owed_to_publisher"] - 10.0) < 0.01
 
 
+def test_courier_gap_booked_as_operating_expense(seed):
+    db = seed.db
+    # Симулира #7: разликата при ръчно одобрение се записва като разход.
+    ok, _ = db.add_expense("2026-06-20", "Куриерски разлики",
+                           "Товарителница WB-1 · поръчка №O1", 3.50,
+                           document_number="WB-1")
+    assert ok
+    exps = db.get_expenses_by_period("2026-06-01", "2026-06-30", "Куриерски разлики")
+    assert len(exps) == 1 and exps[0]["amount"] == 3.50
+    assert db.get_expenses_total_by_period("2026-06-01", "2026-06-30") == 3.50
+
+
 def test_full_accounting_excel_bytes(seed, run_sql):
     db = seed.db
     sid = seed.supplier()
