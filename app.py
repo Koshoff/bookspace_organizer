@@ -107,9 +107,15 @@ if section == "Табло":
     # Филтър по начин на плащане за финансовите карти.
     pay_filter = st.selectbox("Филтър по начин на плащане (карти)", [
         "Всички", "Пощенски паричен превод (Куриер)",
-        "В брой (Каса)", "Банков път / Карта",
+        "В брой (Каса)", "Карта (ПОС)", "Банков път", "Банков път / Карта (стари)",
     ])
-    pay_arg = None if pay_filter == "Всички" else pay_filter
+    # „…(стари)" сочи към наследената слята стойност в базата.
+    if pay_filter == "Всички":
+        pay_arg = None
+    elif pay_filter == "Банков път / Карта (стари)":
+        pay_arg = "Банков път / Карта"
+    else:
+        pay_arg = pay_filter
 
     data = db.get_dashboard_data(str(date_from), str(date_to), pay_arg)
 
@@ -1156,9 +1162,11 @@ elif section == "Нова продажба":
 
     # Канонични стойности за начина на плащане (както се пазят в базата).
     PAY_CASH = "В брой (Каса)"
-    PAY_CARD = "Банков път / Карта"
+    PAY_CARD = "Карта (ПОС)"
     PAY_COD = "Пощенски паричен превод (Куриер)"
+    PAY_BANK = "Банков път"
     LBL_CASH, LBL_CARD, LBL_COD = "В брой (F2)", "Карта (F4)", "Наложен платеж (F8)"
+    LBL_BANK = "Банков път"
     LBL_FINALIZE = "✅ ПРИКЛЮЧИ И ПЕЧАТАЙ БОН"
     SCAN_LABEL = "Сканирай баркод (ISBN) — режим Светкавично сканиране"
 
@@ -1246,12 +1254,12 @@ elif section == "Нова продажба":
     with col2:
         waybill_number = st.text_input("Номер на товарителница (Еконт/Спиди)")
 
-    # --- Начин на плащане като БУТОНИ (за да са управляеми с F2/F4/F8) ---
+    # --- Начин на плащане като БУТОНИ (F2/F4/F8; „Банков път" е само с мишка) ---
     st.caption("Начин на плащане  ·  бързи клавиши: F2 брой · F4 карта · F8 наложен платеж")
-    pay_cols = st.columns(3)
+    pay_cols = st.columns(4)
     for col, (lbl, val) in zip(pay_cols,
                                [(LBL_CASH, PAY_CASH), (LBL_CARD, PAY_CARD),
-                                (LBL_COD, PAY_COD)]):
+                                (LBL_COD, PAY_COD), (LBL_BANK, PAY_BANK)]):
         active = st.session_state.pos_payment == val
         if col.button(lbl, key=f"pay_{val}", width='stretch',
                       type="primary" if active else "secondary"):
@@ -1646,7 +1654,8 @@ elif section == "Ваучери":
                                       value=50.0, step=5.0)
             pay_method = st.selectbox("Как клиентът плаща ваучера", [
                 "В брой (Каса)",
-                "Банков път / Карта",
+                "Карта (ПОС)",
+                "Банков път",
                 "Пощенски паричен превод (Куриер)",
             ])
             submitted = st.form_submit_button("Издай ваучер", type="primary")
@@ -2291,17 +2300,21 @@ elif section == "Счетоводство":
     st.subheader("А) Оборот по начини на плащане")
     pay = db.get_sales_payment_breakdown(d_from, d_to)
     cash = pay.get("В брой (Каса)", 0.0)
+    card_pos = pay.get("Карта (ПОС)", 0.0)
+    bank = pay.get("Банков път", 0.0)
     cod = pay.get("Пощенски паричен превод (Куриер)", 0.0)
-    card_bank = pay.get("Банков път / Карта", 0.0)
     voucher = pay.get("Ваучер", 0.0)
-    pm1, pm2, pm3, pm4 = st.columns(4)
+    legacy_card_bank = pay.get("Банков път / Карта", 0.0)   # наследени записи
+    pm1, pm2, pm3, pm4, pm5 = st.columns(5)
     pm1.metric("В брой", f"{cash:.2f} лв.")
-    pm2.metric("Наложен платеж (куриер)", f"{cod:.2f} лв.")
-    pm3.metric("Карта / Банков път", f"{card_bank:.2f} лв.")
-    pm4.metric("Платено с ваучер", f"{voucher:.2f} лв.")
-    st.caption("Забележка: картовите ПОС плащания и директният банков път се "
-               "пазят в една стойност в базата. За разделянето им е нужен "
-               "отделен метод на плащане — кажи, ако го искаш.")
+    pm2.metric("Карта на ПОС", f"{card_pos:.2f} лв.")
+    pm3.metric("Банков път", f"{bank:.2f} лв.")
+    pm4.metric("Наложен платеж (куриер)", f"{cod:.2f} лв.")
+    pm5.metric("Платено с ваучер", f"{voucher:.2f} лв.")
+    if legacy_card_bank:
+        st.caption("⚠️ Наследени записи с обединен метод Банков път / Карта: "
+                   f"{legacy_card_bank:.2f} лв. (стари продажби отпреди "
+                   "разделянето — не могат да се разпределят със задна дата).")
 
     st.divider()
 

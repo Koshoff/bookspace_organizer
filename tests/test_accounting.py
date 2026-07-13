@@ -102,6 +102,18 @@ def test_payment_breakdown_cash_and_voucher(seed, run_sql):
     assert abs(pay.get("В брой (Каса)", 0) - 40.0) < 0.01
 
 
+def test_payment_breakdown_card_vs_bank_separate(seed, run_sql):
+    db = seed.db
+    sid = seed.supplier()
+    bk = seed.product("BK", "Книга", sid, cover=20.0)
+    seed.deliver(sid, bk, 10, 12.0)
+    _paid_sale(db, run_sql, "O1", [_line(bk, 1, 20.0)], "2026-06-15", method="Карта (ПОС)")
+    _paid_sale(db, run_sql, "O2", [_line(bk, 1, 20.0)], "2026-06-16", method="Банков път")
+    pay = db.get_sales_payment_breakdown("2026-06-01", "2026-06-30")
+    assert pay.get("Карта (ПОС)") == 20.0
+    assert pay.get("Банков път") == 20.0        # двата метода са РАЗДЕЛЕНИ
+
+
 def test_returns_journal(seed, run_sql):
     db = seed.db
     sid = seed.supplier()
