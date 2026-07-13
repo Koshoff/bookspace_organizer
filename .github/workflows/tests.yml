@@ -25,4 +25,4 @@ jobs:
           pip install -r requirements.txt -r requirements-dev.txt
 
       - name: Пускане на тестовете
-        run: pytest
+        run: python -m pytest
