@@ -1,0 +1,10 @@
+# FastAPI backend за Bookspace — увива съществуващия db/ слой.
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+pydantic-settings==2.7.0
+python-jose[cryptography]==3.3.0     # JWT подпис/проверка
+bcrypt==4.2.1                        # хеширане на пароли (директно, без passlib)
+python-multipart==0.0.19             # form-data за login/качване на файлове
+slowapi==0.1.9                       # rate limiting (защита на login)
+email-validator==2.2.0

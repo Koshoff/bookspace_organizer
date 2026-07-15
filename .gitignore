@@ -18,6 +18,14 @@ Thumbs.db
 # Streamlit временни файлове
 .streamlit/secrets.toml
 
+# ТАЙНИ — НИКОГА в git. Пароли, JWT ключ, SMTP/API ключове.
+.env
+.env.local
+backend/.env
+backend/.env.local
+*.pem
+*.key
+
 # Логове от изпълнение — не са код, не се версионират
 streamlit_log.txt
 *.log
